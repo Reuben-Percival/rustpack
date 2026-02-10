@@ -15,6 +15,19 @@ pub fn get_arch() -> String {
         .to_string()
 }
 
+pub fn arch_variants(arch: &str) -> (String, String, String) {
+    let base = if arch.starts_with("x86_64_v") {
+        "x86_64"
+    } else {
+        arch
+    };
+    if base == "x86_64" {
+        (base.to_string(), format!("{base}_v3"), format!("{base}_v4"))
+    } else {
+        (base.to_string(), base.to_string(), base.to_string())
+    }
+}
+
 pub fn check_command_exists(command: &str) -> bool {
     Command::new("which")
         .arg(command)

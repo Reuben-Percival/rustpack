@@ -2,6 +2,7 @@ use anyhow::Result;
 use alpm::TransFlag;
 use std::fs;
 use std::path::Path;
+use colored::Colorize;
 
 use crate::alpm_ops;
 use crate::cli::{GlobalFlags, RemoveFlags};
@@ -14,6 +15,29 @@ fn trans_prepare_or_release(handle: &mut alpm::Alpm) -> Result<()> {
     };
     if let Some(msg) = err_msg {
         let _ = handle.trans_release();
+        if msg.to_lowercase().contains("architecture") {
+            let allowed: Vec<String> = handle
+                .architectures()
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
+            let mut offenders = Vec::new();
+            for pkg in handle.trans_add().iter() {
+                let arch = pkg.arch().unwrap_or("unknown");
+                if arch != "any" && !allowed.iter().any(|a| a == arch) {
+                    offenders.push(format!("{} ({})", pkg.name(), arch));
+                }
+            }
+            if !offenders.is_empty() {
+                let details = format!(
+                    "{}\nAllowed architectures: {}\nInvalid package architectures: {}",
+                    msg,
+                    allowed.join(", "),
+                    offenders.join(", ")
+                );
+                return Err(anyhow::anyhow!(details));
+            }
+        }
         return Err(anyhow::anyhow!(msg));
     }
     Ok(())
@@ -43,14 +67,14 @@ pub fn install_packages(packages: &[String], global: &GlobalFlags) -> Result<()>
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     }
     
-    println!("resolving dependencies...");
-    println!("looking for conflicting packages...");
+    println!("{}", "resolving dependencies...".cyan());
+    println!("{}", "looking for conflicting packages...".cyan());
     trans_prepare_or_release(&mut handle)?;
     
     let to_install = handle.trans_add();
     if to_install.is_empty() {
         let _ = handle.trans_release();
-        println!(" there is nothing to do");
+        println!(" {}", "there is nothing to do".yellow());
         return Ok(());
     }
     
@@ -60,7 +84,7 @@ pub fn install_packages(packages: &[String], global: &GlobalFlags) -> Result<()>
     }
     
     if global.test {
-        println!(":: --test: skipping commit");
+        println!(":: {}", "--test: skipping commit".yellow());
         let _ = handle.trans_release();
         return Ok(());
     }
@@ -98,14 +122,14 @@ pub fn install_local(global: &GlobalFlags, pkg_files: &[String]) -> Result<()> {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     }
     
-    println!("resolving dependencies...");
-    println!("looking for conflicting packages...");
+    println!("{}", "resolving dependencies...".cyan());
+    println!("{}", "looking for conflicting packages...".cyan());
     trans_prepare_or_release(&mut handle)?;
     
     let to_install = handle.trans_add();
     if to_install.is_empty() {
         let _ = handle.trans_release();
-        println!(" there is nothing to do");
+        println!(" {}", "there is nothing to do".yellow());
         return Ok(());
     }
     
@@ -115,7 +139,7 @@ pub fn install_local(global: &GlobalFlags, pkg_files: &[String]) -> Result<()> {
     }
     
     if global.test {
-        println!(":: --test: skipping commit");
+        println!(":: {}", "--test: skipping commit".yellow());
         let _ = handle.trans_release();
         return Ok(());
     }
@@ -151,14 +175,14 @@ pub fn remove_packages(packages: &[String], remove: &RemoveFlags, global: &Globa
         handle.trans_remove_pkg(pkg)?;
     }
     
-    println!("checking dependencies...");
-    println!("looking for conflicting packages...");
+    println!("{}", "checking dependencies...".cyan());
+    println!("{}", "looking for conflicting packages...".cyan());
     trans_prepare_or_release(&mut handle)?;
     
     let to_remove = handle.trans_remove();
     if to_remove.is_empty() {
         let _ = handle.trans_release();
-        println!(" there is nothing to do");
+        println!(" {}", "there is nothing to do".yellow());
         return Ok(());
     }
     
@@ -168,7 +192,7 @@ pub fn remove_packages(packages: &[String], remove: &RemoveFlags, global: &Globa
     }
     
     if global.test {
-        println!(":: --test: skipping commit");
+        println!(":: {}", "--test: skipping commit".yellow());
         let _ = handle.trans_release();
         return Ok(());
     }
@@ -187,9 +211,9 @@ pub fn sync_install(
     let mut handle = alpm_ops::init_handle(global)?;
     
     if refresh {
-        println!(":: Synchronizing package databases...");
+        println!(":: {}", "Synchronizing package databases...".cyan().bold());
         if global.test {
-            println!(":: --test: skipping database update");
+            println!(":: {}", "--test: skipping database update".yellow());
         } else {
             handle.syncdbs_mut().update(false)?;
         }
@@ -214,7 +238,7 @@ pub fn sync_install(
     }
     handle.trans_init(flags)?;
     if upgrade {
-        println!(":: Starting full system upgrade...");
+        println!(":: {}", "Starting full system upgrade...".cyan().bold());
         handle.sync_sysupgrade(false)?;
     }
     for name in targets {
@@ -224,18 +248,18 @@ pub fn sync_install(
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     }
     
-    println!("resolving dependencies...");
-    println!("looking for conflicting packages...");
+    println!("{}", "resolving dependencies...".cyan());
+    println!("{}", "looking for conflicting packages...".cyan());
     trans_prepare_or_release(&mut handle)?;
     
     let to_add = handle.trans_add();
     if to_add.is_empty() {
         let _ = handle.trans_release();
-        println!(" there is nothing to do");
+        println!(" {}", "there is nothing to do".yellow());
         return Ok(());
     }
     
-    println!("\nPackages to upgrade/install:");
+    println!("\n{}", "Packages to upgrade/install:".bold());
     let localdb = handle.localdb();
     for pkg in to_add.iter() {
         let old_ver = localdb
@@ -251,7 +275,7 @@ pub fn sync_install(
     }
     
     if global.test {
-        println!(":: --test: skipping commit");
+        println!(":: {}", "--test: skipping commit".yellow());
         let _ = handle.trans_release();
         return Ok(());
     }
@@ -310,9 +334,9 @@ pub fn clean_cache(global: &GlobalFlags, level: u8) -> Result<()> {
     }
     
     if removed > 0 {
-        println!(":: Cache cleaned: {} files removed", removed);
+        println!(":: {} {}", "Cache cleaned:".green().bold(), format!("{} files removed", removed));
     } else {
-        println!(":: Cache is clean");
+        println!(":: {}", "Cache is clean".green().bold());
     }
     
     Ok(())

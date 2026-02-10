@@ -54,6 +54,27 @@ fn main() -> Result<()> {
         print_usage();
         std::process::exit(0);
     }
+
+    if args.iter().any(|a| a == "--aur" || a == "--paru") {
+        if utils::is_root() {
+            eprintln!("error: --aur/--paru must be run as a regular user (do not use sudo)");
+            std::process::exit(1);
+        }
+        if !utils::check_command_exists("paru") {
+            eprintln!("error: paru not found in PATH (install paru or run without --aur)");
+            std::process::exit(1);
+        }
+        let filtered: Vec<String> = args
+            .into_iter()
+            .skip(1)
+            .filter(|a| a != "--aur" && a != "--paru")
+            .collect();
+        let status = std::process::Command::new("paru")
+            .args(filtered)
+            .status()
+            .expect("failed to execute paru");
+        std::process::exit(status.code().unwrap_or(1));
+    }
     
     let parsed = match parse_args(&args) {
         Ok(parsed) => parsed,

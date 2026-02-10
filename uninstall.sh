@@ -1,5 +1,35 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+show_help() {
+    cat <<'EOF'
+Usage: uninstall.sh [--find] [--dry-run] [--purge] [--yes]
+  --find     Deep scan the filesystem for rustpack binaries (slow).
+  --dry-run  Show what would be removed, but do not delete anything.
+  --purge    Also remove rustpack config/cache data (if known).
+  --yes      Skip confirmation prompts.
+EOF
+}
+
+deep_scan=false
+dry_run=false
+purge=false
+assume_yes=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --find) deep_scan=true ;;
+        --dry-run) dry_run=true ;;
+        --purge) purge=true ;;
+        --yes) assume_yes=true ;;
+        -h|--help) show_help; exit 0 ;;
+        *)
+            echo "Unknown option: $arg"
+            show_help
+            exit 1
+            ;;
+    esac
+done
 
 echo "Uninstalling rustpack..."
 
@@ -40,31 +70,73 @@ removed=0
 declare -A seen
 for p in "${paths[@]}"; do
     [ -z "$p" ] && continue
-    if [ -n "${seen[$p]}" ]; then
+    if [ -n "${seen[$p]+x}" ]; then
         continue
     fi
     seen["$p"]=1
     if [ -e "$p" ]; then
-        rm -f "$p"
-        echo "Removed: $p"
+        if $dry_run; then
+            echo "Would remove: $p"
+        else
+            rm -f "$p"
+            echo "Removed: $p"
+        fi
         removed=$((removed + 1))
     fi
 done
 
 # Optional deep scan if requested
-if [ "$1" = "--find" ]; then
+if $deep_scan; then
+    if ! $assume_yes; then
+        read -r -p "Deep scan can be slow. Continue? [y/N] " ans
+        case "${ans,,}" in
+            y|yes) ;;
+            *) echo "Aborted."; exit 1 ;;
+        esac
+    fi
     echo "Performing deep scan (this may take a while)..."
     while IFS= read -r p; do
         if [ -e "$p" ]; then
-            rm -f "$p"
-            echo "Removed: $p"
+            if $dry_run; then
+                echo "Would remove: $p"
+            else
+                rm -f "$p"
+                echo "Removed: $p"
+            fi
             removed=$((removed + 1))
         fi
-    done < <(find / -type f -o -type l -name rustpack 2>/dev/null | awk '!seen[$0]++')
+    done < <(find / \( -type f -o -type l \) -name rustpack 2>/dev/null | awk '!seen[$0]++')
+fi
+
+if $purge; then
+    purge_paths=(
+        "/etc/rustpack"
+        "/var/lib/rustpack"
+        "/var/cache/rustpack"
+        "$HOME/.config/rustpack"
+        "$HOME/.cache/rustpack"
+        "$HOME/.local/share/rustpack"
+    )
+    for p in "${purge_paths[@]}"; do
+        [ -z "$p" ] && continue
+        if [ -e "$p" ]; then
+            if $dry_run; then
+                echo "Would remove: $p"
+            else
+                rm -rf "$p"
+                echo "Removed: $p"
+            fi
+            removed=$((removed + 1))
+        fi
+    done
 fi
 
 if [ $removed -eq 0 ]; then
     echo "No rustpack binaries found to remove."
 else
-    echo "rustpack uninstalled successfully"
+    if $dry_run; then
+        echo "Dry run complete."
+    else
+        echo "rustpack uninstalled successfully"
+    fi
 fi

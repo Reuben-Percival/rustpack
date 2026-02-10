@@ -172,9 +172,11 @@ fn parse_mirrorlist(path: &str) -> Result<Vec<String>> {
     Ok(servers)
 }
 
-pub fn expand_server_url(server: &str, repo_name: &str, arch: &str) -> String {
+pub fn expand_server_url(server: &str, repo_name: &str, arch: &str, arch_v3: &str, arch_v4: &str) -> String {
     server
         .replace("$repo", repo_name)
+        .replace("$arch_v3", arch_v3)
+        .replace("$arch_v4", arch_v4)
         .replace("$arch", arch)
 }
 
@@ -185,7 +187,7 @@ mod tests {
     #[test]
     fn test_expand_server_url() {
         let url = "https://mirror.example.com/$repo/os/$arch";
-        let expanded = expand_server_url(url, "core", "x86_64");
+        let expanded = expand_server_url(url, "core", "x86_64", "x86_64_v3", "x86_64_v4");
         assert_eq!(expanded, "https://mirror.example.com/core/os/x86_64");
     }
 }
