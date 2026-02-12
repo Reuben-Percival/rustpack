@@ -2,7 +2,9 @@ use anyhow::{Context, Result, bail};
 use alpm::{Alpm, SigLevel, Usage, DownloadEvent, Progress};
 use colored::Colorize;
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 
 use crate::config::{self, PacmanConfig};
 use crate::cli::GlobalFlags;
@@ -179,6 +181,48 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
     Ok(())
 }
 
+fn siglevel_is_weak(raw: &str) -> bool {
+    let normalized = raw.to_ascii_lowercase();
+    normalized.contains("never") || !normalized.contains("required")
+}
+
+fn enforce_strict_config(config: &PacmanConfig, global: &GlobalFlags) -> Result<()> {
+    if !global.strict {
+        return Ok(());
+    }
+    if let Some(sig) = config.sig_level.as_ref() {
+        if siglevel_is_weak(sig) {
+            bail!("error: --strict requires strong SigLevel; found '{}'", sig);
+        }
+    }
+    if let Some(sig) = config.local_file_sig_level.as_ref() {
+        if siglevel_is_weak(sig) {
+            bail!(
+                "error: --strict requires strong LocalFileSigLevel; found '{}'",
+                sig
+            );
+        }
+    }
+    if let Some(sig) = config.remote_file_sig_level.as_ref() {
+        if siglevel_is_weak(sig) {
+            bail!(
+                "error: --strict requires strong RemoteFileSigLevel; found '{}'",
+                sig
+            );
+        }
+    }
+    for repo in &config.repositories {
+        if siglevel_is_weak(repo.sig_level.as_str()) {
+            bail!(
+                "error: --strict requires strong repository SigLevel; repo '{}' has '{}'",
+                repo.name,
+                repo.sig_level
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct DownloadState {
     last_percent: HashMap<String, i32>,
@@ -282,16 +326,8 @@ fn format_bytes(bytes: i64) -> String {
 }
 
 pub fn init_handle(global: &GlobalFlags) -> Result<Alpm> {
-    let mut config = config::parse_pacman_config("/etc/pacman.conf")?;
-    if let Some(ref root_dir) = global.root_dir {
-        config.root_dir = root_dir.clone();
-    }
-    if let Some(ref db_path) = global.db_path {
-        config.db_path = db_path.clone();
-    }
-    if let Some(ref cache_dir) = global.cache_dir {
-        config.cache_dir = cache_dir.clone();
-    }
+    let config = effective_config(global)?;
+    enforce_strict_config(&config, global)?;
     let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
         .context("Failed to initialize libalpm handle")?;
     configure_handle(&mut handle, &config, global)?;
@@ -299,6 +335,98 @@ pub fn init_handle(global: &GlobalFlags) -> Result<Alpm> {
 }
 
 pub fn get_cache_dir(global: &GlobalFlags) -> Result<String> {
+    Ok(effective_config(global)?.cache_dir)
+}
+
+pub fn ensure_db_unlocked(global: &GlobalFlags) -> Result<()> {
+    let config = effective_config(global)?;
+    let lock_path = Path::new(&config.db_path).join("db.lck");
+    if lock_path.exists() {
+        bail!(
+            "database is locked (found {})",
+            lock_path.to_string_lossy()
+        );
+    }
+    Ok(())
+}
+
+fn root_join(root: &str, rel: &str) -> String {
+    let rel_trimmed = rel.trim_start_matches('/');
+    if root == "/" {
+        format!("/{}", rel_trimmed)
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), rel_trimmed)
+    }
+}
+
+fn detect_distro(root: &str) -> String {
+    let os_release = root_join(root, "/etc/os-release");
+    let content = match fs::read_to_string(os_release) {
+        Ok(v) => v.to_ascii_lowercase(),
+        Err(_) => return "other".to_string(),
+    };
+    if content.contains("id=cachyos") {
+        return "cachyos".to_string();
+    }
+    if content.contains("id=arch") || content.contains("id_like=arch") {
+        return "arch".to_string();
+    }
+    "other".to_string()
+}
+
+fn has_local_pkg_dir(db_path: &str, pkg_prefix: &str) -> bool {
+    let local_path = Path::new(db_path).join("local");
+    let entries = match fs::read_dir(local_path) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.starts_with(pkg_prefix) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub fn preflight_transaction(global: &GlobalFlags) -> Result<()> {
+    ensure_db_unlocked(global)?;
+    let config = effective_config(global)?;
+    let root = config.root_dir.as_str();
+    let gpg_dir = config.gpg_dir.as_deref().unwrap_or("/etc/pacman.d/gnupg");
+    let gpg_path = root_join(root, gpg_dir);
+    let pubring_kbx = Path::new(&gpg_path).join("pubring.kbx");
+    let pubring_gpg = Path::new(&gpg_path).join("pubring.gpg");
+    let trustdb = Path::new(&gpg_path).join("trustdb.gpg");
+    
+    if !Path::new(&gpg_path).exists() {
+        bail!(
+            "keyring directory missing at {} (run pacman-key --init and repopulate keyrings)",
+            gpg_path
+        );
+    }
+    if !pubring_kbx.exists() && !pubring_gpg.exists() {
+        bail!(
+            "no keyring public keyring file in {} (expected pubring.kbx or pubring.gpg)",
+            gpg_path
+        );
+    }
+    if !trustdb.exists() {
+        bail!("keyring trustdb missing at {}", trustdb.to_string_lossy());
+    }
+    
+    let distro = detect_distro(root);
+    if !has_local_pkg_dir(config.db_path.as_str(), "archlinux-keyring-") {
+        bail!("archlinux-keyring is not installed in the local package database");
+    }
+    if distro == "cachyos" && !has_local_pkg_dir(config.db_path.as_str(), "cachyos-keyring-") {
+        bail!("cachyos-keyring is not installed in the local package database");
+    }
+    Ok(())
+}
+
+pub fn effective_config(global: &GlobalFlags) -> Result<PacmanConfig> {
     let mut config = config::parse_pacman_config("/etc/pacman.conf")?;
     if let Some(ref root_dir) = global.root_dir {
         config.root_dir = root_dir.clone();
@@ -309,20 +437,11 @@ pub fn get_cache_dir(global: &GlobalFlags) -> Result<String> {
     if let Some(ref cache_dir) = global.cache_dir {
         config.cache_dir = cache_dir.clone();
     }
-    Ok(config.cache_dir)
+    Ok(config)
 }
 
 pub fn local_file_siglevel(global: &GlobalFlags) -> Result<SigLevel> {
-    let mut config = config::parse_pacman_config("/etc/pacman.conf")?;
-    if let Some(ref root_dir) = global.root_dir {
-        config.root_dir = root_dir.clone();
-    }
-    if let Some(ref db_path) = global.db_path {
-        config.db_path = db_path.clone();
-    }
-    if let Some(ref cache_dir) = global.cache_dir {
-        config.cache_dir = cache_dir.clone();
-    }
+    let config = effective_config(global)?;
     Ok(parse_siglevel(config.local_file_sig_level.as_ref()).unwrap_or(SigLevel::USE_DEFAULT))
 }
 

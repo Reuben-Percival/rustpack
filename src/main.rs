@@ -4,6 +4,8 @@ mod search;
 mod utils;
 mod alpm_ops;
 mod cli;
+mod doctor;
+mod history;
 
 use anyhow::Result;
 use colored::Colorize;
@@ -16,6 +18,8 @@ enum Operation {
     Query,
     Remove,
     Upgrade,
+    Doctor,
+    History,
     Help,
 }
 
@@ -35,6 +39,8 @@ struct QueryFlags {
     list_files: bool,
     manual: bool,
     owns: bool,
+    explicit: bool,
+    reverse_deps: bool,
 }
 
 struct ParsedArgs {
@@ -72,7 +78,7 @@ fn main() -> Result<()> {
         let status = std::process::Command::new("paru")
             .args(filtered)
             .status()
-            .expect("failed to execute paru");
+            .map_err(|e| anyhow::anyhow!("failed to execute paru: {}", e))?;
         std::process::exit(status.code().unwrap_or(1));
     }
     
@@ -84,13 +90,23 @@ fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
+    emit_safety_warnings(&parsed.global);
     
-    match parsed.op {
-        Operation::Sync => handle_sync(&parsed)?,
-        Operation::Query => handle_query(&parsed)?,
-        Operation::Remove => handle_remove(&parsed)?,
-        Operation::Upgrade => handle_upgrade(&parsed)?,
-        Operation::Help => print_usage(),
+    let run_result = match parsed.op {
+        Operation::Sync => handle_sync(&parsed),
+        Operation::Query => handle_query(&parsed),
+        Operation::Remove => handle_remove(&parsed),
+        Operation::Upgrade => handle_upgrade(&parsed),
+        Operation::Doctor => handle_doctor(&parsed),
+        Operation::History => handle_history(&parsed),
+        Operation::Help => {
+            print_usage();
+            Ok(())
+        }
+    };
+    if let Err(err) = run_result {
+        print_runtime_error(&err);
+        std::process::exit(1);
     }
     
     Ok(())
@@ -117,6 +133,26 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
     
     while i < args.len() {
         let arg = &args[i];
+        if in_options && arg == "--doctor" {
+            set_operation(&mut op, Operation::Doctor)?;
+            i += 1;
+            continue;
+        }
+        if in_options && arg == "--history" {
+            set_operation(&mut op, Operation::History)?;
+            i += 1;
+            continue;
+        }
+        if i == 1 && arg == "doctor" {
+            set_operation(&mut op, Operation::Doctor)?;
+            i += 1;
+            continue;
+        }
+        if i == 1 && arg == "history" {
+            set_operation(&mut op, Operation::History)?;
+            i += 1;
+            continue;
+        }
         if in_options && (arg == "-h" || arg == "--help") {
             return Ok(ParsedArgs {
                 op: Operation::Help,
@@ -194,6 +230,9 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     });
                     global.cache_dir = Some(value.ok_or_else(|| "error: --cachedir requires a value".to_string())?);
                 }
+                "--strict" => global.strict = true,
+                "--compact" => global.compact = true,
+                "--verbose" => global.verbose = true,
                 _ => return Err(format!("error: invalid option '{}'", arg)),
             }
             i += 1;
@@ -287,6 +326,8 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     'l' => parsed.query.list_files = true,
                     'm' => parsed.query.manual = true,
                     'o' => parsed.query.owns = true,
+                    'e' => parsed.query.explicit = true,
+                    'r' => parsed.query.reverse_deps = true,
                     _ => return Err(format!("error: invalid option '-{}' for -Q", ch)),
                 }
             }
@@ -307,12 +348,22 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             if parsed.query.owns {
                 option_count += 1;
             }
-            
-            if option_count > 1 {
-                return Err("error: only one of -i, -s, -l, -m, or -o can be used with -Q".to_string());
+            if parsed.query.explicit {
+                option_count += 1;
+            }
+            if parsed.query.reverse_deps {
+                option_count += 1;
             }
             
-            if (parsed.query.info || parsed.query.search || parsed.query.list_files || parsed.query.owns)
+            if option_count > 1 {
+                return Err("error: only one of -i, -s, -l, -m, -o, -e, or -r can be used with -Q".to_string());
+            }
+            
+            if (parsed.query.info
+                || parsed.query.search
+                || parsed.query.list_files
+                || parsed.query.owns
+                || parsed.query.reverse_deps)
                 && parsed.targets.is_empty()
             {
                 return Err("error: no targets specified (use -h for help)".to_string());
@@ -352,6 +403,19 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
         }
+        Operation::Doctor => {
+            if !flag_chars.is_empty() {
+                return Err("error: doctor does not accept short operation flags".to_string());
+            }
+            if !parsed.targets.is_empty() {
+                return Err("error: doctor does not take targets".to_string());
+            }
+        }
+        Operation::History => {
+            if !flag_chars.is_empty() {
+                return Err("error: history does not accept short operation flags".to_string());
+            }
+        }
         Operation::Help => {}
     }
     
@@ -366,6 +430,22 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
     
     if parsed.op == Operation::Query && parsed.global.nodeps > 0 {
         return Err("error: --nodeps only applies to -S/-R/-U".to_string());
+    }
+    
+    if parsed.global.compact && parsed.global.verbose {
+        return Err("error: --compact and --verbose cannot be used together".to_string());
+    }
+    
+    if parsed.global.strict {
+        if parsed.global.nodeps > 0 {
+            return Err("error: --strict disallows --nodeps/-d/-dd".to_string());
+        }
+        if parsed.global.noscriptlet {
+            return Err("error: --strict disallows --noscriptlet".to_string());
+        }
+        if !parsed.global.overwrite.is_empty() {
+            return Err("error: --strict disallows --overwrite".to_string());
+        }
     }
     
     Ok(parsed)
@@ -393,6 +473,7 @@ fn handle_sync(parsed: &ParsedArgs) -> Result<()> {
     }
     
     if flags.clean_cache > 0 {
+        alpm_ops::ensure_db_unlocked(&parsed.global)?;
         install::clean_cache(&parsed.global, flags.clean_cache)?;
         return Ok(());
     }
@@ -400,6 +481,7 @@ fn handle_sync(parsed: &ParsedArgs) -> Result<()> {
     let refresh = flags.refresh;
     let upgrade = flags.upgrade;
     if refresh || upgrade || parsed.targets.is_empty() {
+        alpm_ops::preflight_transaction(&parsed.global)?;
         install::sync_install(
             &parsed.global,
             refresh,
@@ -409,6 +491,7 @@ fn handle_sync(parsed: &ParsedArgs) -> Result<()> {
         return Ok(());
     }
     
+    alpm_ops::preflight_transaction(&parsed.global)?;
     install_packages(parsed.targets.clone(), &parsed.global)?;
     
     Ok(())
@@ -444,6 +527,20 @@ fn handle_query(parsed: &ParsedArgs) -> Result<()> {
         return Ok(());
     }
     
+    if flags.explicit {
+        if parsed.targets.is_empty() {
+            search::list_explicit_packages(&parsed.global)?;
+        } else {
+            search::query_explicit_packages(&parsed.global, &parsed.targets)?;
+        }
+        return Ok(());
+    }
+    
+    if flags.reverse_deps {
+        search::query_reverse_dependencies(&parsed.global, &parsed.targets)?;
+        return Ok(());
+    }
+    
     if parsed.targets.is_empty() {
         query_list_packages(&parsed.global)?;
     } else {
@@ -459,6 +556,7 @@ fn handle_remove(parsed: &ParsedArgs) -> Result<()> {
         std::process::exit(1);
     }
     
+    alpm_ops::ensure_db_unlocked(&parsed.global)?;
     remove_packages(parsed.targets.clone(), &parsed.remove, &parsed.global)?;
     
     Ok(())
@@ -470,8 +568,17 @@ fn handle_upgrade(parsed: &ParsedArgs) -> Result<()> {
         std::process::exit(1);
     }
     
+    alpm_ops::preflight_transaction(&parsed.global)?;
     install::install_local(&parsed.global, &parsed.targets)?;
     Ok(())
+}
+
+fn handle_doctor(parsed: &ParsedArgs) -> Result<()> {
+    doctor::run(&parsed.global)
+}
+
+fn handle_history(parsed: &ParsedArgs) -> Result<()> {
+    history::show(&parsed.global, &parsed.targets)
 }
 
 fn print_usage() {
@@ -481,9 +588,11 @@ fn print_usage() {
     println!();
     println!("Operations:");
     println!("  -S [y|u|s|i]    Sync/upgrade, search, or info");
-    println!("  -Q [i|s|l|m|o]  Query installed packages");
+    println!("  -Q [i|s|l|m|o|e|r]  Query installed packages");
     println!("  -R [s|n]        Remove packages");
     println!("  -U <pkgfile>    Install local package file");
+    println!("  doctor          Run health checks (Arch/CachyOS aware)");
+    println!("  history         Show transaction timeline");
     println!();
     println!("Examples:");
     println!("  rustpack -Ss firefox      Search for firefox");
@@ -492,7 +601,12 @@ fn print_usage() {
     println!("  rustpack -Q               List installed packages");
     println!("  rustpack -Ql bash         List files for bash");
     println!("  rustpack -Qm              List foreign packages");
+    println!("  rustpack -Qe              List explicitly installed packages");
+    println!("  rustpack -Qr glibc        Show reverse dependencies of glibc");
     println!("  rustpack -Qo /usr/bin/vi  Find owning package");
+    println!("  rustpack doctor           Run system/package manager health checks");
+    println!("  rustpack history          Show recent transactions");
+    println!("  rustpack history show <id> Show detailed transaction");
     println!("  rustpack -R firefox       Remove firefox");
     println!("  rustpack -Rns firefox     Remove firefox and its unused deps");
     println!("  rustpack -U ./pkg.pkg.tar.zst  Install a local package file");
@@ -502,9 +616,45 @@ fn print_usage() {
     println!("  Use '--' to stop option parsing, e.g. rustpack -S -- -weirdpkg");
     println!("  Use '--test' to simulate changes without committing");
     println!("  Common options: --noconfirm --needed --overwrite --asdeps --asexplicit");
-    println!("                  --root --dbpath --cachedir");
+    println!("                  --root --dbpath --cachedir --strict --compact --verbose");
     println!("  Dependency options: -d/-dd (--nodeps), --noscriptlet");
     println!("  Cache clean: -Sc (unused) or -Scc (all)");
+}
+
+fn emit_safety_warnings(global: &GlobalFlags) {
+    if global.strict {
+        return;
+    }
+    if global.nodeps > 0 {
+        eprintln!(
+            "{}",
+            "warning: dependency checks are disabled; this can break package consistency".yellow()
+        );
+    }
+    if global.noscriptlet {
+        eprintln!(
+            "{}",
+            "warning: scriptlets are disabled; some packages may not configure correctly".yellow()
+        );
+    }
+    if !global.overwrite.is_empty() {
+        eprintln!(
+            "{}",
+            "warning: --overwrite can replace files owned by other packages; review targets carefully".yellow()
+        );
+    }
+}
+
+fn print_runtime_error(err: &anyhow::Error) {
+    let msg = err.to_string();
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("db.lck") || lower.contains("unable to lock database") || lower.contains("database is locked") {
+        eprintln!("{}", "error: package database is locked by another process.".red());
+        eprintln!("hint: wait for the other package manager process to finish.");
+        eprintln!("hint: if no package manager is running, remove the stale lock file manually.");
+        return;
+    }
+    eprintln!("error: {}", msg);
 }
 
 fn install_packages(packages: Vec<String>, global: &GlobalFlags) -> Result<()> {

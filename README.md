@@ -13,14 +13,23 @@ This project is under active development. Use at your own risk on production sys
 - Direct libalpm usage (no pacman subprocess calls).
 - Reads configuration from `/etc/pacman.conf`.
 - Built-in progress output for downloads and transactions.
+- Pre-commit transaction summaries (download size and net installed size).
+- Reverse dependency inspection (`-Qr`) and removal breakage warnings.
+- Built-in `doctor` diagnostics for Arch Linux and CachyOS setups.
+- Better lock/concurrency UX with clear stale-lock guidance.
+- Transaction preflight checks to block sync/install/upgrade when keyring state is unhealthy.
+- Transaction history command (`history`) for recent activity and per-entry details.
+- Output modes: `--compact` for reduced noise and `--verbose` for extra context.
 - Optional AUR passthrough via `paru` (`--aur` / `--paru`).
 
 ## Install (from source)
 
 ```bash
-cargo build --release
 sudo ./install.sh
 ```
+
+`install.sh` will auto-run `cargo build --release` if the release binary is missing.
+When run with `sudo`, the build step runs as the invoking user (`$SUDO_USER`), while copy/install stays root-only.
 
 ## Quick Start
 
@@ -60,7 +69,12 @@ rustpack -Qi bash             [installed package info]
 rustpack -Qs mesa             [search installed]
 rustpack -Ql bash             [list installed files]
 rustpack -Qm                  [list foreign (not in sync dbs)]
+rustpack -Qe                  [list explicitly installed packages]
+rustpack -Qr glibc            [reverse dependencies]
 rustpack -Qo /usr/bin/vi      [owning package]
+rustpack doctor               [health checks for pacman/alpm setup]
+rustpack history              [show recent transaction timeline]
+rustpack history show <id>    [show details for one transaction]
 sudo rustpack -R firefox      [remove package]
 sudo rustpack -Rs firefox     [remove + deps]
 sudo rustpack -Rns firefox    [remove + deps + config files]
@@ -75,6 +89,8 @@ Operations:
 - `-Q` query installed packages.
 - `-R` remove packages.
 - `-U` install local package files.
+- `doctor` run health checks for package manager configuration/state.
+- `history` show transaction timeline and details.
 
 `-S` sub-flags:
 - `-Sy` refresh sync databases.
@@ -92,6 +108,8 @@ Operations:
 - `-Ql` list installed files.
 - `-Qm` list foreign packages.
 - `-Qo` find owning package for a file.
+- `-Qe` list explicitly installed packages.
+- `-Qr` show reverse dependencies for target package(s).
 
 `-R` sub-flags:
 - `-Rs` remove and unneeded deps.
@@ -113,6 +131,9 @@ Global options:
 - `--root <path>` use an alternate root.
 - `--dbpath <path>` use an alternate database path.
 - `--cachedir <path>` use an alternate package cache.
+- `--strict` enforce stronger safety rules (disallows `--nodeps`, `--noscriptlet`, `--overwrite` and weak signature policy).
+- `--compact` reduced output for faster scanning.
+- `--verbose` extra context for troubleshooting.
 - `--` stop option parsing (e.g., `rustpack -S -- -weirdpkg`).
 - `-h` / `--help` show help.
 
@@ -127,6 +148,7 @@ Note:
 - `rustpack` modifies system packages and must be run as root for install/remove/upgrade.
 - Always review changes before confirming a transaction.
 - Ensure your `/etc/pacman.conf` and mirrorlists are correct and trusted.
+- `rustpack` now performs keyring/db-lock preflight checks before `-S`/`-U` operations and aborts early on unhealthy state.
 - Do not interrupt transactions unless necessary (power loss or forced kill can corrupt state).
 - Keep regular backups of `/etc` and important data.
 - Use `--test` to simulate transactions without committing changes.

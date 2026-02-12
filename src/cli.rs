@@ -11,6 +11,9 @@ pub struct GlobalFlags {
     pub db_path: Option<String>,
     pub cache_dir: Option<String>,
     pub test: bool,
+    pub strict: bool,
+    pub compact: bool,
+    pub verbose: bool,
 }
 
 #[derive(Default, Clone)]

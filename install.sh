@@ -1,11 +1,36 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 echo "Installing rustpack..."
 
-# Check if rustpack binary exists
+# Build rustpack if release binary is missing
 if [ ! -f "target/release/rustpack" ]; then
-    echo "Error: rustpack binary not found. Please run 'cargo build --release' first."
+    echo "Release binary not found, building with cargo..."
+    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        if ! sudo -u "$SUDO_USER" -H bash -lc "command -v cargo >/dev/null 2>&1"; then
+            echo "Error: cargo not found for user '$SUDO_USER'. Install Rust toolchain for that user first."
+            exit 1
+        fi
+        SCRIPT_DIR_Q="$(printf '%q' "$SCRIPT_DIR")"
+        sudo -u "$SUDO_USER" -H bash -lc "cd $SCRIPT_DIR_Q && cargo build --release"
+    elif [ "$EUID" -eq 0 ]; then
+        echo "Error: release binary missing and script is running as root without SUDO_USER."
+        echo "Run 'cargo build --release' as your normal user, then run sudo ./install.sh"
+        exit 1
+    else
+        if ! command -v cargo >/dev/null 2>&1; then
+            echo "Error: cargo not found in PATH. Install Rust toolchain first."
+            exit 1
+        fi
+        cargo build --release
+    fi
+fi
+
+if [ ! -f "target/release/rustpack" ]; then
+    echo "Error: build completed but target/release/rustpack was not found."
     exit 1
 fi
 
