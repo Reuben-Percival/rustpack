@@ -1,6 +1,7 @@
 use anyhow::Result;
 use alpm::{Package, PackageReason};
 use colored::Colorize;
+use std::collections::VecDeque;
 
 use crate::alpm_ops;
 use crate::cli::GlobalFlags;
@@ -403,5 +404,107 @@ pub fn query_owns(global: &GlobalFlags, paths: &[String]) -> Result<()> {
         }
     }
     
+    Ok(())
+}
+
+pub fn explain_why(global: &GlobalFlags, package_name: &str) -> Result<()> {
+    let handle = alpm_ops::init_handle(global)?;
+    let localdb = handle.localdb();
+    let target = localdb
+        .pkg(package_name)
+        .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", package_name))?;
+
+    println!(
+        "{} {}",
+        "Why is installed:".cyan().bold(),
+        package_name.green().bold()
+    );
+
+    if target.reason() == PackageReason::Explicit {
+        println!(
+            "{} {}",
+            package_name.green().bold(),
+            "is explicitly installed".yellow()
+        );
+        return Ok(());
+    }
+
+    let mut queue: VecDeque<Vec<String>> = VecDeque::new();
+    queue.push_back(vec![package_name.to_string()]);
+    let mut chains: Vec<Vec<String>> = Vec::new();
+    let max_depth = 10usize;
+    let max_chains = 8usize;
+
+    while let Some(path) = queue.pop_front() {
+        if chains.len() >= max_chains {
+            break;
+        }
+        if path.len() > max_depth {
+            continue;
+        }
+
+        let current = path.last().map(|s| s.as_str()).unwrap_or(package_name);
+        let pkg = match localdb.pkg(current) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let revdeps: Vec<String> = pkg.required_by().iter().map(|n| n.to_string()).collect();
+        for parent in revdeps {
+            if chains.len() >= max_chains {
+                break;
+            }
+            if path.iter().any(|p| p == &parent) {
+                continue;
+            }
+            let mut next_path = path.clone();
+            next_path.push(parent.clone());
+
+            if let Ok(parent_pkg) = localdb.pkg(parent.as_str()) {
+                if parent_pkg.reason() == PackageReason::Explicit {
+                    chains.push(next_path);
+                    continue;
+                }
+            }
+            queue.push_back(next_path);
+        }
+    }
+
+    if chains.is_empty() {
+        let revdeps: Vec<String> = target.required_by().iter().map(|n| n.to_string()).collect();
+        if revdeps.is_empty() {
+            println!(
+                "{}",
+                "No reverse dependencies found; it may be an orphan dependency.".yellow()
+            );
+        } else {
+            println!(
+                "{}",
+                "No explicit install chain found within search depth.".yellow()
+            );
+        }
+        return Ok(());
+    }
+
+    for (idx, chain) in chains.iter().enumerate() {
+        println!("\n{} {}", "Chain".cyan().bold(), (idx + 1).to_string().white().bold());
+        for (i, node) in chain.iter().enumerate() {
+            if i + 1 == chain.len() {
+                println!("  {} {}", node.green().bold(), "(explicit)".yellow());
+            } else {
+                println!("  {}", node.white().bold());
+            }
+            if i + 1 != chain.len() {
+                println!("    {}", "required by".dimmed());
+            }
+        }
+    }
+    if chains.len() >= max_chains {
+        println!(
+            "\n{}",
+            "Output truncated; more dependency chains may exist.".dimmed()
+        );
+    }
+
     Ok(())
 }

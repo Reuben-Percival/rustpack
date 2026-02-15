@@ -1,0 +1,27 @@
+name: Arch CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies (Arch)
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed base-devel rust cargo pkgconf clang git
+
+      - name: Build check
+        run: cargo check
+
+      - name: Tests
+        run: cargo test --all

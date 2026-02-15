@@ -18,6 +18,7 @@ enum Operation {
     Query,
     Remove,
     Upgrade,
+    Why,
     Doctor,
     History,
     Help,
@@ -97,6 +98,7 @@ fn main() -> Result<()> {
         Operation::Query => handle_query(&parsed),
         Operation::Remove => handle_remove(&parsed),
         Operation::Upgrade => handle_upgrade(&parsed),
+        Operation::Why => handle_why(&parsed),
         Operation::Doctor => handle_doctor(&parsed),
         Operation::History => handle_history(&parsed),
         Operation::Help => {
@@ -140,6 +142,23 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
         }
         if in_options && arg == "--history" {
             set_operation(&mut op, Operation::History)?;
+            i += 1;
+            continue;
+        }
+        if in_options && arg == "--why" {
+            set_operation(&mut op, Operation::Why)?;
+            i += 1;
+            continue;
+        }
+        if in_options && arg.starts_with("--why=") {
+            set_operation(&mut op, Operation::Why)?;
+            let (_, value) = arg
+                .split_once('=')
+                .ok_or_else(|| "error: --why requires a package name".to_string())?;
+            if value.is_empty() {
+                return Err("error: --why requires a package name".to_string());
+            }
+            targets.push(value.to_string());
             i += 1;
             continue;
         }
@@ -231,6 +250,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     global.cache_dir = Some(value.ok_or_else(|| "error: --cachedir requires a value".to_string())?);
                 }
                 "--strict" => global.strict = true,
+                "--insecure-skip-signatures" => global.insecure_skip_signatures = true,
                 "--compact" => global.compact = true,
                 "--verbose" => global.verbose = true,
                 _ => return Err(format!("error: invalid option '{}'", arg)),
@@ -411,6 +431,17 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                 return Err("error: doctor does not take targets".to_string());
             }
         }
+        Operation::Why => {
+            if !flag_chars.is_empty() {
+                return Err("error: --why does not accept short operation flags".to_string());
+            }
+            if parsed.targets.is_empty() {
+                return Err("error: --why requires a package name".to_string());
+            }
+            if parsed.targets.len() > 1 {
+                return Err("error: --why accepts only one package name".to_string());
+            }
+        }
         Operation::History => {
             if !flag_chars.is_empty() {
                 return Err("error: history does not accept short operation flags".to_string());
@@ -428,7 +459,8 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
         }
     }
     
-    if parsed.op == Operation::Query && parsed.global.nodeps > 0 {
+    if (parsed.op == Operation::Query || parsed.op == Operation::Why) && parsed.global.nodeps > 0
+    {
         return Err("error: --nodeps only applies to -S/-R/-U".to_string());
     }
     
@@ -445,6 +477,9 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
         }
         if !parsed.global.overwrite.is_empty() {
             return Err("error: --strict disallows --overwrite".to_string());
+        }
+        if parsed.global.insecure_skip_signatures {
+            return Err("error: --strict disallows --insecure-skip-signatures".to_string());
         }
     }
     
@@ -577,48 +612,74 @@ fn handle_doctor(parsed: &ParsedArgs) -> Result<()> {
     doctor::run(&parsed.global)
 }
 
+fn handle_why(parsed: &ParsedArgs) -> Result<()> {
+    search::explain_why(&parsed.global, &parsed.targets[0])
+}
+
 fn handle_history(parsed: &ParsedArgs) -> Result<()> {
     history::show(&parsed.global, &parsed.targets)
 }
 
 fn print_usage() {
-    println!("rustpack - A Rust-based package manager for Arch Linux");
+    const LEFT_WIDTH: usize = 32;
+    println!("{}", "rustpack".bold().cyan());
+    println!("{}", "A Rust-based package manager for Arch Linux".dimmed());
     println!();
-    println!("Usage: rustpack <operation> [options] [targets]");
+    println!("{} {}", "Usage:".bold(), "rustpack <operation> [options] [targets]");
+
+    print_help_section("Operations");
+    print_help_row("-S [y|u|s|i]", "Sync/upgrade, search, or info", LEFT_WIDTH);
+    print_help_row("-Q [i|s|l|m|o|e|r]", "Query installed packages", LEFT_WIDTH);
+    print_help_row("-R [s|n]", "Remove packages", LEFT_WIDTH);
+    print_help_row("-U <pkgfile>", "Install local package file", LEFT_WIDTH);
+    print_help_row("--why <pkg>", "Explain why a package is installed", LEFT_WIDTH);
+    print_help_row("doctor", "Run health checks (Arch/CachyOS aware)", LEFT_WIDTH);
+    print_help_row("history", "Show transaction timeline", LEFT_WIDTH);
+
+    print_help_section("Examples");
+    print_help_row("rustpack -Ss firefox", "Search for firefox", LEFT_WIDTH);
+    print_help_row("rustpack -S firefox", "Install firefox", LEFT_WIDTH);
+    print_help_row("rustpack -Syu", "Full system upgrade", LEFT_WIDTH);
+    print_help_row("rustpack -Q", "List installed packages", LEFT_WIDTH);
+    print_help_row("rustpack -Ql bash", "List files for bash", LEFT_WIDTH);
+    print_help_row("rustpack -Qm", "List foreign packages", LEFT_WIDTH);
+    print_help_row("rustpack -Qe", "List explicitly installed packages", LEFT_WIDTH);
+    print_help_row("rustpack --why libva", "Explain install reason chain", LEFT_WIDTH);
+    print_help_row("rustpack -Qr glibc", "Show reverse dependencies of glibc", LEFT_WIDTH);
+    print_help_row("rustpack -Qo /usr/bin/vi", "Find owning package", LEFT_WIDTH);
+    print_help_row("rustpack doctor", "Run package-manager health checks", LEFT_WIDTH);
+    print_help_row("rustpack history", "Show recent transactions", LEFT_WIDTH);
+    print_help_row("rustpack history show <id>", "Show one transaction", LEFT_WIDTH);
+    print_help_row("rustpack -R firefox", "Remove firefox", LEFT_WIDTH);
+    print_help_row("rustpack -Rns firefox", "Remove firefox and unused deps", LEFT_WIDTH);
+    print_help_row(
+        "rustpack -U ./pkg.pkg.tar.zst",
+        "Install a local package file",
+        LEFT_WIDTH,
+    );
+    print_help_row("rustpack -Sc", "Clean unused cache", LEFT_WIDTH);
+
+    print_help_section("Notes");
+    print_help_note("Use '--' to stop option parsing (example: rustpack -S -- -weirdpkg)");
+    print_help_note("Use '--test' to simulate changes without committing");
+    print_help_note("Common options: --noconfirm --needed --overwrite --asdeps --asexplicit");
+    print_help_note("                --root --dbpath --cachedir --strict --compact --verbose");
+    print_help_note("Emergency only: --insecure-skip-signatures (disables signature checks)");
+    print_help_note("Dependency options: -d/-dd (--nodeps), --noscriptlet");
+    print_help_note("Cache clean: -Sc (unused) or -Scc (all)");
+}
+
+fn print_help_section(title: &str) {
     println!();
-    println!("Operations:");
-    println!("  -S [y|u|s|i]    Sync/upgrade, search, or info");
-    println!("  -Q [i|s|l|m|o|e|r]  Query installed packages");
-    println!("  -R [s|n]        Remove packages");
-    println!("  -U <pkgfile>    Install local package file");
-    println!("  doctor          Run health checks (Arch/CachyOS aware)");
-    println!("  history         Show transaction timeline");
-    println!();
-    println!("Examples:");
-    println!("  rustpack -Ss firefox      Search for firefox");
-    println!("  rustpack -S firefox       Install firefox");
-    println!("  rustpack -Syu             Full system upgrade");
-    println!("  rustpack -Q               List installed packages");
-    println!("  rustpack -Ql bash         List files for bash");
-    println!("  rustpack -Qm              List foreign packages");
-    println!("  rustpack -Qe              List explicitly installed packages");
-    println!("  rustpack -Qr glibc        Show reverse dependencies of glibc");
-    println!("  rustpack -Qo /usr/bin/vi  Find owning package");
-    println!("  rustpack doctor           Run system/package manager health checks");
-    println!("  rustpack history          Show recent transactions");
-    println!("  rustpack history show <id> Show detailed transaction");
-    println!("  rustpack -R firefox       Remove firefox");
-    println!("  rustpack -Rns firefox     Remove firefox and its unused deps");
-    println!("  rustpack -U ./pkg.pkg.tar.zst  Install a local package file");
-    println!("  rustpack -Sc              Clean unused cache");
-    println!();
-    println!("Notes:");
-    println!("  Use '--' to stop option parsing, e.g. rustpack -S -- -weirdpkg");
-    println!("  Use '--test' to simulate changes without committing");
-    println!("  Common options: --noconfirm --needed --overwrite --asdeps --asexplicit");
-    println!("                  --root --dbpath --cachedir --strict --compact --verbose");
-    println!("  Dependency options: -d/-dd (--nodeps), --noscriptlet");
-    println!("  Cache clean: -Sc (unused) or -Scc (all)");
+    println!("{}", title.bold().underline());
+}
+
+fn print_help_row(left: &str, right: &str, left_width: usize) {
+    println!("  {left:<left_width$} {right}");
+}
+
+fn print_help_note(note: &str) {
+    println!("  {}", note.dimmed());
 }
 
 fn emit_safety_warnings(global: &GlobalFlags) {
@@ -627,20 +688,30 @@ fn emit_safety_warnings(global: &GlobalFlags) {
     }
     if global.nodeps > 0 {
         eprintln!(
-            "{}",
-            "warning: dependency checks are disabled; this can break package consistency".yellow()
+            "{} {}",
+            "warning:".yellow().bold(),
+            "dependency checks are disabled; this can break package consistency".yellow()
         );
     }
     if global.noscriptlet {
         eprintln!(
-            "{}",
-            "warning: scriptlets are disabled; some packages may not configure correctly".yellow()
+            "{} {}",
+            "warning:".yellow().bold(),
+            "scriptlets are disabled; some packages may not configure correctly".yellow()
         );
     }
     if !global.overwrite.is_empty() {
         eprintln!(
-            "{}",
-            "warning: --overwrite can replace files owned by other packages; review targets carefully".yellow()
+            "{} {}",
+            "warning:".yellow().bold(),
+            "--overwrite can replace files owned by other packages; review targets carefully".yellow()
+        );
+    }
+    if global.insecure_skip_signatures {
+        eprintln!(
+            "{} {}",
+            "warning:".yellow().bold(),
+            "--insecure-skip-signatures disables package/database signature checks; use only to recover a broken keyring".yellow()
         );
     }
 }
@@ -649,12 +720,38 @@ fn print_runtime_error(err: &anyhow::Error) {
     let msg = err.to_string();
     let lower = msg.to_ascii_lowercase();
     if lower.contains("db.lck") || lower.contains("unable to lock database") || lower.contains("database is locked") {
-        eprintln!("{}", "error: package database is locked by another process.".red());
-        eprintln!("hint: wait for the other package manager process to finish.");
-        eprintln!("hint: if no package manager is running, remove the stale lock file manually.");
+        eprintln!(
+            "{} {}",
+            "error:".red().bold(),
+            "package database is locked by another process.".red()
+        );
+        eprintln!("{} wait for the other package manager process to finish.", "hint:".cyan().bold());
+        eprintln!(
+            "{} if no package manager is running, remove the stale lock file manually.",
+            "hint:".cyan().bold()
+        );
         return;
     }
-    eprintln!("error: {}", msg);
+    if lower.contains("pgp signature")
+        || lower.contains("signature from")
+        || lower.contains("is not valid (invalid or corrupted database")
+    {
+        eprintln!("{} {}", "error:".red().bold(), msg);
+        eprintln!(
+            "{} fix keyrings first: sudo pacman-key --init && sudo pacman-key --populate archlinux cachyos",
+            "hint:".cyan().bold()
+        );
+        eprintln!(
+            "{} refresh keyring packages: sudo pacman -Sy --needed archlinux-keyring cachyos-keyring",
+            "hint:".cyan().bold()
+        );
+        eprintln!(
+            "{} emergency bypass: rerun once with --insecure-skip-signatures, then repair keyrings immediately.",
+            "hint:".cyan().bold()
+        );
+        return;
+    }
+    eprintln!("{} {}", "error:".red().bold(), msg);
 }
 
 fn install_packages(packages: Vec<String>, global: &GlobalFlags) -> Result<()> {

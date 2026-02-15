@@ -1,4 +1,5 @@
 use anyhow::Result;
+use colored::Colorize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -162,20 +163,40 @@ pub fn show(global: &GlobalFlags, args: &[String]) -> Result<()> {
 
 fn print_list(entries: &[Entry], limit: usize) {
     let start = entries.len().saturating_sub(limit);
-    println!("Recent rustpack history:");
+    println!("{}", "Recent rustpack history".bold().cyan());
+    println!(
+        "{:<20} {:<12} {:<14} {:<10} {}",
+        "ID".bold(),
+        "TS".bold(),
+        "OP".bold(),
+        "STATUS".bold(),
+        "TARGETS".bold()
+    );
     for e in entries[start..].iter().rev() {
+        let status = match e.status.as_str() {
+            "success" => e.status.green().bold().to_string(),
+            "failed" => e.status.red().bold().to_string(),
+            "cancelled" => e.status.yellow().bold().to_string(),
+            "dry-run" => e.status.cyan().bold().to_string(),
+            _ => e.status.clone(),
+        };
         println!(
-            "{}  ts={}  op={}  status={}  targets={}",
-            e.id, e.ts, e.op, e.status, e.targets
+            "{:<20} {:<12} {:<14} {:<10} {}",
+            e.id,
+            e.ts,
+            e.op,
+            status,
+            e.targets
         );
     }
 }
 
 fn print_entry(entry: &Entry) {
-    println!("id      : {}", entry.id);
-    println!("ts      : {}", entry.ts);
-    println!("op      : {}", entry.op);
-    println!("status  : {}", entry.status);
-    println!("targets : {}", entry.targets);
-    println!("summary : {}", entry.summary);
+    println!("{}", "History Entry".bold().cyan());
+    println!("{} {}", "id:".bold(), entry.id);
+    println!("{} {}", "ts:".bold(), entry.ts);
+    println!("{} {}", "op:".bold(), entry.op);
+    println!("{} {}", "status:".bold(), entry.status);
+    println!("{} {}", "targets:".bold(), entry.targets);
+    println!("{} {}", "summary:".bold(), entry.summary);
 }

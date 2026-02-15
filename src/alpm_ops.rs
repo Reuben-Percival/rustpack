@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use alpm::{Alpm, SigLevel, Usage, DownloadEvent, Progress};
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -94,14 +94,20 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
     add_arch(arch_v3.clone())?;
     add_arch(arch_v4.clone())?;
     
-    if let Some(sig) = parse_siglevel(config.sig_level.as_ref()) {
-        handle.set_default_siglevel(sig)?;
-    }
-    if let Some(sig) = parse_siglevel(config.local_file_sig_level.as_ref()) {
-        handle.set_local_file_siglevel(sig)?;
-    }
-    if let Some(sig) = parse_siglevel(config.remote_file_sig_level.as_ref()) {
-        handle.set_remote_file_siglevel(sig)?;
+    if global.insecure_skip_signatures {
+        handle.set_default_siglevel(SigLevel::NONE)?;
+        handle.set_local_file_siglevel(SigLevel::NONE)?;
+        handle.set_remote_file_siglevel(SigLevel::NONE)?;
+    } else {
+        if let Some(sig) = parse_siglevel(config.sig_level.as_ref()) {
+            handle.set_default_siglevel(sig)?;
+        }
+        if let Some(sig) = parse_siglevel(config.local_file_sig_level.as_ref()) {
+            handle.set_local_file_siglevel(sig)?;
+        }
+        if let Some(sig) = parse_siglevel(config.remote_file_sig_level.as_ref()) {
+            handle.set_remote_file_siglevel(sig)?;
+        }
     }
     
     if !config.hook_dirs.is_empty() {
@@ -111,7 +117,11 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
     }
     
     for repo in &config.repositories {
-        let repo_sig = parse_siglevel(Some(&repo.sig_level)).unwrap_or(SigLevel::USE_DEFAULT);
+        let repo_sig = if global.insecure_skip_signatures {
+            SigLevel::NONE
+        } else {
+            parse_siglevel(Some(&repo.sig_level)).unwrap_or(SigLevel::USE_DEFAULT)
+        };
         let db = handle.register_syncdb_mut(repo.name.as_str(), repo_sig)?;
         db.set_usage(Usage::ALL)?;
         for server in &repo.servers {
@@ -374,22 +384,6 @@ fn detect_distro(root: &str) -> String {
     "other".to_string()
 }
 
-fn has_local_pkg_dir(db_path: &str, pkg_prefix: &str) -> bool {
-    let local_path = Path::new(db_path).join("local");
-    let entries = match fs::read_dir(local_path) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    for entry in entries.flatten() {
-        if let Some(name) = entry.file_name().to_str() {
-            if name.starts_with(pkg_prefix) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 pub fn preflight_transaction(global: &GlobalFlags) -> Result<()> {
     ensure_db_unlocked(global)?;
     let config = effective_config(global)?;
@@ -417,10 +411,13 @@ pub fn preflight_transaction(global: &GlobalFlags) -> Result<()> {
     }
     
     let distro = detect_distro(root);
-    if !has_local_pkg_dir(config.db_path.as_str(), "archlinux-keyring-") {
+    let handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
+        .context("Failed to initialize libalpm handle for preflight package checks")?;
+    let localdb = handle.localdb();
+    if localdb.pkg("archlinux-keyring").is_err() {
         bail!("archlinux-keyring is not installed in the local package database");
     }
-    if distro == "cachyos" && !has_local_pkg_dir(config.db_path.as_str(), "cachyos-keyring-") {
+    if distro == "cachyos" && localdb.pkg("cachyos-keyring").is_err() {
         bail!("cachyos-keyring is not installed in the local package database");
     }
     Ok(())
@@ -451,7 +448,60 @@ pub fn find_sync_pkg<'a>(handle: &'a Alpm, name: &str) -> Result<&'a alpm::Packa
             return Ok(pkg);
         }
     }
-    bail!("error: target not found: {}", name)
+    let mut exact_providers: Vec<String> = Vec::new();
+    let mut fuzzy_names: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+
+    for db in handle.syncdbs().iter() {
+        if let Ok(results) = db.search([name].iter()) {
+            for pkg in results.iter() {
+                let candidate = format!("{}/{}", db.name(), pkg.name());
+                if seen.insert(candidate.clone()) {
+                    fuzzy_names.push(candidate);
+                }
+                if fuzzy_names.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        for pkg in db.pkgs().iter() {
+            for provide in pkg.provides().iter() {
+                let provided_name = provide
+                    .to_string()
+                    .split(|c| c == '=' || c == '<' || c == '>')
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                if provided_name == name {
+                    let provider = format!("{}/{} (provides {})", db.name(), pkg.name(), name);
+                    if seen.insert(provider.clone()) {
+                        exact_providers.push(provider);
+                    }
+                    if exact_providers.len() >= 8 {
+                        break;
+                    }
+                }
+            }
+            if exact_providers.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    let mut msg = format!("error: target not found: {}", name);
+    if !exact_providers.is_empty() {
+        msg.push_str("\nPossible provider packages:");
+        for p in exact_providers {
+            msg.push_str(format!("\n  {}", p).as_str());
+        }
+    }
+    if !fuzzy_names.is_empty() {
+        msg.push_str("\nClosest repository matches:");
+        for m in fuzzy_names {
+            msg.push_str(format!("\n  {}", m).as_str());
+        }
+    }
+    bail!(msg)
 }
 
 pub fn find_local_pkg<'a>(handle: &'a Alpm, name: &str) -> Result<&'a alpm::Package> {

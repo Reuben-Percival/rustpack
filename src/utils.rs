@@ -1,18 +1,12 @@
-use std::process::Command;
+use std::env;
+use std::path::PathBuf;
 
 pub fn is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
 pub fn get_arch() -> String {
-    let output = Command::new("uname")
-        .arg("-m")
-        .output()
-        .expect("Failed to get architecture");
-    
-    String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .to_string()
+    env::consts::ARCH.to_string()
 }
 
 pub fn arch_variants(arch: &str) -> (String, String, String) {
@@ -29,11 +23,13 @@ pub fn arch_variants(arch: &str) -> (String, String, String) {
 }
 
 pub fn check_command_exists(command: &str) -> bool {
-    Command::new("which")
-        .arg(command)
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    let Some(path_env) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path_env).any(|dir| {
+        let candidate: PathBuf = dir.join(command);
+        candidate.is_file()
+    })
 }
 
 pub fn confirm_action(message: &str) -> bool {

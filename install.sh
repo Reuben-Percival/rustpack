@@ -4,11 +4,29 @@ set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+skip_build=false
+for arg in "$@"; do
+    case "$arg" in
+        --skip-build) skip_build=true ;;
+        -h|--help)
+            cat <<'EOF'
+Usage: install.sh [--skip-build]
+  --skip-build  Install existing target/release/rustpack without rebuilding.
+EOF
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg"
+            exit 1
+            ;;
+    esac
+done
+
 echo "Installing rustpack..."
 
-# Build rustpack if release binary is missing
-if [ ! -f "target/release/rustpack" ]; then
-    echo "Release binary not found, building with cargo..."
+# Build rustpack unless explicitly skipped
+if ! $skip_build; then
+    echo "Building release binary with cargo..."
     if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         if ! sudo -u "$SUDO_USER" -H bash -lc "command -v cargo >/dev/null 2>&1"; then
             echo "Error: cargo not found for user '$SUDO_USER'. Install Rust toolchain for that user first."
@@ -17,8 +35,8 @@ if [ ! -f "target/release/rustpack" ]; then
         SCRIPT_DIR_Q="$(printf '%q' "$SCRIPT_DIR")"
         sudo -u "$SUDO_USER" -H bash -lc "cd $SCRIPT_DIR_Q && cargo build --release"
     elif [ "$EUID" -eq 0 ]; then
-        echo "Error: release binary missing and script is running as root without SUDO_USER."
-        echo "Run 'cargo build --release' as your normal user, then run sudo ./install.sh"
+        echo "Error: cannot build as root without SUDO_USER."
+        echo "Run 'cargo build --release' as your normal user, then run sudo ./install.sh --skip-build"
         exit 1
     else
         if ! command -v cargo >/dev/null 2>&1; then
@@ -27,6 +45,8 @@ if [ ! -f "target/release/rustpack" ]; then
         fi
         cargo build --release
     fi
+else
+    echo "Skipping build (--skip-build)."
 fi
 
 if [ ! -f "target/release/rustpack" ]; then
@@ -54,7 +74,27 @@ fi
 cp target/release/rustpack /usr/local/bin/rustpack
 chmod +x /usr/local/bin/rustpack
 
+# Install man page
+install -d /usr/local/share/man/man8
+install -m 0644 docs/man/rustpack.8 /usr/local/share/man/man8/rustpack.8
+
+# Install shell completions
+install -d /usr/share/bash-completion/completions
+install -m 0644 completions/rustpack.bash /usr/share/bash-completion/completions/rustpack
+
+install -d /usr/share/zsh/site-functions
+install -m 0644 completions/_rustpack /usr/share/zsh/site-functions/_rustpack
+
+install -d /usr/share/fish/vendor_completions.d
+install -m 0644 completions/rustpack.fish /usr/share/fish/vendor_completions.d/rustpack.fish
+
 echo "rustpack installed successfully to /usr/local/bin/rustpack"
+echo ""
+echo "Also installed:"
+echo "  man page: /usr/local/share/man/man8/rustpack.8"
+echo "  bash completion: /usr/share/bash-completion/completions/rustpack"
+echo "  zsh completion: /usr/share/zsh/site-functions/_rustpack"
+echo "  fish completion: /usr/share/fish/vendor_completions.d/rustpack.fish"
 echo ""
 echo "Usage:"
 echo "  rustpack -Ss firefox      # Search packages"

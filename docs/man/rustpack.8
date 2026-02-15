@@ -1,0 +1,119 @@
+.TH RUSTPACK 8 "February 2026" "rustpack" "System Administration"
+.SH NAME
+rustpack \- ALPM-first package manager for Arch-style systems
+.SH SYNOPSIS
+.B rustpack
+.RI [ operation ]
+.RI [ options ]
+.RI [ targets ]
+.SH DESCRIPTION
+.B rustpack
+is a package manager frontend that uses
+.B libalpm
+for package database access, dependency resolution, and package transactions.
+The CLI follows pacman-style operations and flags for common workflows.
+.SH OPERATIONS
+.TP
+.B -S
+Sync/install operation against configured repositories.
+.TP
+.B -Q
+Query installed packages.
+.TP
+.B -R
+Remove installed packages.
+.TP
+.B -U
+Install local package file(s).
+.TP
+.B doctor
+Run package manager health checks.
+.TP
+.B history
+Show transaction history and inspect entries.
+.SH GLOBAL OPTIONS
+.TP
+.B --test, --dry-run
+Simulate transaction without commit.
+.TP
+.B --noconfirm
+Do not prompt for confirmation.
+.TP
+.B --needed
+Skip reinstalling up-to-date packages (sync/install only).
+.TP
+.B --nodeps
+Skip dependency checks (dangerous).
+.TP
+.B --noscriptlet
+Skip scriptlets (sync/local install only).
+.TP
+.B --overwrite \fIGLOB\fR
+Allow file overwrite conflicts.
+.TP
+.B --asdeps, --asexplicit
+Set install reason for sync/install targets.
+.TP
+.B --root \fIPATH\fR
+Use alternate root directory.
+.TP
+.B --dbpath \fIPATH\fR
+Use alternate database path.
+.TP
+.B --cachedir \fIPATH\fR
+Use alternate package cache path.
+.TP
+.B --strict
+Enable stricter safety policy and reject dangerous flag combinations.
+.TP
+.B --insecure-skip-signatures
+Disable package and database signature verification.
+Use only as an emergency workaround for broken keyring state.
+.TP
+.B --compact
+Reduce output noise.
+.TP
+.B --verbose
+Show extra operation context.
+.SH SUB-FLAGS
+.SS Sync (-S)
+.B -Sy, -Su, -Syu, -Ss, -Si, -Sc, -Scc, -Sd, -Sdd
+.SS Query (-Q)
+.B -Qi, -Qs, -Ql, -Qm, -Qo, -Qe, -Qr
+.SS Remove (-R)
+.B -Rs, -Rn, -Rd, -Rdd
+.SS Local Install (-U)
+.B -Ud, -Udd
+.SH EXAMPLES
+.TP
+.B rustpack -Ss firefox
+Search repositories.
+.TP
+.B sudo rustpack -S firefox
+Install a package.
+.TP
+.B sudo rustpack -Syu
+Refresh repositories and full system upgrade.
+.TP
+.B rustpack -Qe
+List explicitly installed packages.
+.TP
+.B rustpack history show <id>
+Show details for one history entry.
+.SH SAFETY
+For transactional operations, rustpack performs preflight checks including DB lock
+status, keyring presence, and keyring package verification.
+The emergency option
+.B --insecure-skip-signatures
+should be used only to recover from broken signature infrastructure.
+.SH FILES
+.TP
+.I /etc/pacman.conf
+Main configuration source.
+.TP
+.I /var/log/rustpack/history.log
+Transaction history log file.
+.SH SEE ALSO
+.BR pacman (8)
+.SH AUTHORS
+rustpack contributors.
