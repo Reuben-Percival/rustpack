@@ -17,27 +17,47 @@ struct Report {
     ok: usize,
     warn: usize,
     fail: usize,
+    checks: Vec<(String, &'static str)>,
+    json: bool,
 }
 
 impl Report {
-    fn new() -> Self {
-        Self { ok: 0, warn: 0, fail: 0 }
+    fn new(json: bool) -> Self {
+        Self { ok: 0, warn: 0, fail: 0, checks: Vec::new(), json }
     }
 
     fn ok(&mut self, label: &str) {
         self.ok += 1;
-        println!("{} {}", "[OK]".green().bold(), label);
+        self.checks.push((label.to_string(), "ok"));
+        if !self.json {
+            println!("{} {}", "[OK]".green().bold(), label);
+        }
     }
 
     fn warn(&mut self, label: &str) {
         self.warn += 1;
-        println!("{} {}", "[WARN]".yellow().bold(), label);
+        self.checks.push((label.to_string(), "warn"));
+        if !self.json {
+            println!("{} {}", "[WARN]".yellow().bold(), label);
+        }
     }
 
     fn fail(&mut self, label: &str) {
         self.fail += 1;
-        println!("{} {}", "[FAIL]".red().bold(), label);
+        self.checks.push((label.to_string(), "fail"));
+        if !self.json {
+            println!("{} {}", "[FAIL]".red().bold(), label);
+        }
     }
+}
+
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 fn root_join(root: &str, rel: &str) -> PathBuf {
@@ -66,20 +86,21 @@ fn detect_distro(root: &str) -> Distro {
 
 pub fn run(global: &GlobalFlags) -> Result<()> {
     let config = alpm_ops::effective_config(global)?;
-    let mut report = Report::new();
+    let mut report = Report::new(global.json);
     let distro = detect_distro(config.root_dir.as_str());
     let distro_name = match distro {
         Distro::Arch => "Arch Linux",
         Distro::CachyOS => "CachyOS",
         Distro::Other => "Unknown/Other",
     };
-    
-    println!("{}", "rustpack doctor".bold());
-    println!("Detected distro profile: {}", distro_name);
-    println!("Root: {}", config.root_dir);
-    println!("DBPath: {}", config.db_path);
-    println!("CacheDir: {}", config.cache_dir);
-    println!();
+    if !global.json {
+        println!("{}", "rustpack doctor".bold());
+        println!("Detected distro profile: {}", distro_name);
+        println!("Root: {}", config.root_dir);
+        println!("DBPath: {}", config.db_path);
+        println!("CacheDir: {}", config.cache_dir);
+        println!();
+    }
     
     if Path::new(config.root_dir.as_str()).exists() {
         report.ok("Root directory exists");
@@ -202,16 +223,45 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
         }
     }
     
-    println!();
-    println!(
-        "{} ok={} warn={} fail={}",
-        "Doctor summary:".bold(),
-        report.ok,
-        report.warn,
-        report.fail
-    );
-    
+    if global.json {
+        let checks = report
+            .checks
+            .iter()
+            .map(|(label, status)| {
+                format!(
+                    "{{\"status\":\"{}\",\"label\":\"{}\"}}",
+                    status,
+                    json_escape(label)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "{{\"profile\":\"{}\",\"root\":\"{}\",\"dbpath\":\"{}\",\"cachedir\":\"{}\",\"summary\":{{\"ok\":{},\"warn\":{},\"fail\":{}}},\"checks\":[{}]}}",
+            json_escape(distro_name),
+            json_escape(config.root_dir.as_str()),
+            json_escape(config.db_path.as_str()),
+            json_escape(config.cache_dir.as_str()),
+            report.ok,
+            report.warn,
+            report.fail,
+            checks
+        );
+    } else {
+        println!();
+        println!(
+            "{} ok={} warn={} fail={}",
+            "Doctor summary:".bold(),
+            report.ok,
+            report.warn,
+            report.fail
+        );
+    }
+
     if report.fail > 0 {
+        if global.json {
+            bail!("__RUSTPACK_JSON_DOCTOR_FAILED__");
+        }
         bail!("doctor found failing checks");
     }
     Ok(())

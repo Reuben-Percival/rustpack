@@ -39,6 +39,7 @@ Non-goals today:
 
 - Compact mode: `--compact`
 - Verbose mode: `--verbose`
+- JSON mode: `--json` (supported on `history`, `doctor`, `-Qi`, `-Qe`)
 - Transaction summaries before commit.
 - Better error hints for lock/signature failures.
 - Provider/close-match suggestions when sync target is missing.
@@ -78,6 +79,7 @@ Non-goals today:
 - `--insecure-skip-signatures`
 - `--compact`
 - `--verbose`
+- `--json`
 
 ### Compatibility notes
 
@@ -379,7 +381,6 @@ When adding features:
 
 ## 17. Roadmap Candidates
 
-- JSON output mode for queries/history/doctor.
 - Human-readable timestamps for history output.
 - Enhanced provider selection prompts during ambiguous installs.
 - More granular doctor checks (mirror freshness, hook health, signature policy diagnostics).

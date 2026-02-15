@@ -41,6 +41,7 @@ Active development project. Use carefully on production systems and always revie
 - Output modes:
   - `--compact` for minimal output
   - `--verbose` for extra context
+  - `--json` for machine-readable output (supported on `history`, `doctor`, `-Qi`, `-Qe`)
 - Smarter sync target resolution errors:
   - Shows provider package suggestions and close repo matches when a target is not found.
 - `doctor` command for package-manager health diagnostics.
@@ -141,6 +142,7 @@ rustpack --aur -S spotify
 - `--insecure-skip-signatures` disable package/database signature checks (emergency recovery only)
 - `--compact` reduced output
 - `--verbose` more detailed output
+- `--json` machine-readable output for automation (`history`, `doctor`, `-Qi`, `-Qe`)
 - `--` stop option parsing
 
 ## Usage Examples

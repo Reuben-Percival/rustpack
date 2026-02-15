@@ -107,7 +107,7 @@ fn main() -> Result<()> {
         }
     };
     if let Err(err) = run_result {
-        print_runtime_error(&err);
+        print_runtime_error(&parsed.global, &err);
         std::process::exit(1);
     }
     
@@ -251,6 +251,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                 }
                 "--strict" => global.strict = true,
                 "--insecure-skip-signatures" => global.insecure_skip_signatures = true,
+                "--json" => global.json = true,
                 "--compact" => global.compact = true,
                 "--verbose" => global.verbose = true,
                 _ => return Err(format!("error: invalid option '{}'", arg)),
@@ -536,9 +537,7 @@ fn handle_query(parsed: &ParsedArgs) -> Result<()> {
     let flags = &parsed.query;
     
     if flags.info {
-        for pkg in &parsed.targets {
-            search::show_package_info(&parsed.global, pkg)?;
-        }
+        search::show_local_package_infos(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
     
@@ -663,7 +662,7 @@ fn print_usage() {
     print_help_note("Use '--' to stop option parsing (example: rustpack -S -- -weirdpkg)");
     print_help_note("Use '--test' to simulate changes without committing");
     print_help_note("Common options: --noconfirm --needed --overwrite --asdeps --asexplicit");
-    print_help_note("                --root --dbpath --cachedir --strict --compact --verbose");
+    print_help_note("                --root --dbpath --cachedir --strict --compact --verbose --json");
     print_help_note("Emergency only: --insecure-skip-signatures (disables signature checks)");
     print_help_note("Dependency options: -d/-dd (--nodeps), --noscriptlet");
     print_help_note("Cache clean: -Sc (unused) or -Scc (all)");
@@ -683,7 +682,7 @@ fn print_help_note(note: &str) {
 }
 
 fn emit_safety_warnings(global: &GlobalFlags) {
-    if global.strict {
+    if global.strict || global.json {
         return;
     }
     if global.nodeps > 0 {
@@ -716,8 +715,24 @@ fn emit_safety_warnings(global: &GlobalFlags) {
     }
 }
 
-fn print_runtime_error(err: &anyhow::Error) {
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn print_runtime_error(global: &GlobalFlags, err: &anyhow::Error) {
     let msg = err.to_string();
+    if global.json {
+        if msg == "__RUSTPACK_JSON_DOCTOR_FAILED__" {
+            return;
+        }
+        println!("{{\"error\":\"{}\"}}", json_escape(&msg));
+        return;
+    }
     let lower = msg.to_ascii_lowercase();
     if lower.contains("db.lck") || lower.contains("unable to lock database") || lower.contains("database is locked") {
         eprintln!(

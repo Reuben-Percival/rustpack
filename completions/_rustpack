@@ -19,13 +19,14 @@ _rustpack() {
     '--insecure-skip-signatures[disable signature checks (emergency only)]'
     '--compact[reduce output noise]'
     '--verbose[show extra context]'
+    '--json[emit machine-readable JSON output]'
     '--aur[delegate to paru]'
     '--paru[delegate to paru]'
     '--help[show help]'
   )
 
   _arguments -C \
-    '1:operation:(-S -Q -R -U doctor history)' \
+    '1:operation:(-S -Q -R -U --why doctor history)' \
     '*::args:->args'
 
   case $state in

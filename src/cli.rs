@@ -13,6 +13,7 @@ pub struct GlobalFlags {
     pub test: bool,
     pub strict: bool,
     pub insecure_skip_signatures: bool,
+    pub json: bool,
     pub compact: bool,
     pub verbose: bool,
 }

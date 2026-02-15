@@ -26,6 +26,9 @@ Remove installed packages.
 .B -U
 Install local package file(s).
 .TP
+.B --why \fIPACKAGE\fR
+Explain why a package is installed (reverse dependency chain to explicit package).
+.TP
 .B doctor
 Run package manager health checks.
 .TP
@@ -75,6 +78,9 @@ Reduce output noise.
 .TP
 .B --verbose
 Show extra operation context.
+.TP
+.B --json
+Emit machine-readable JSON output for supported commands.
 .SH SUB-FLAGS
 .SS Sync (-S)
 .B -Sy, -Su, -Syu, -Ss, -Si, -Sc, -Scc, -Sd, -Sdd

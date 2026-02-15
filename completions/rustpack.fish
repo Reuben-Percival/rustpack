@@ -1,8 +1,8 @@
 # fish completion for rustpack
 
-set -l global_opts --test --dry-run --noconfirm --needed --nodeps --noscriptlet --asdeps --asexplicit --strict --insecure-skip-signatures --compact --verbose --aur --paru
+set -l global_opts --test --dry-run --noconfirm --needed --nodeps --noscriptlet --asdeps --asexplicit --strict --insecure-skip-signatures --compact --verbose --json --aur --paru
 
-complete -c rustpack -f -n "__fish_use_subcommand" -a "-S -Q -R -U doctor history"
+complete -c rustpack -f -n "__fish_use_subcommand" -a "-S -Q -R -U --why doctor history"
 complete -c rustpack -f -l help -s h -d "Show help"
 
 complete -c rustpack -f -n "__fish_seen_subcommand_from -S" -a "-Sy -Su -Syu -Ss -Si -Sc -Scc -Sd -Sdd"

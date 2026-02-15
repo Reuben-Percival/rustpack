@@ -18,6 +18,27 @@ struct Entry {
     summary: String,
 }
 
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn entry_json(entry: &Entry) -> String {
+    format!(
+        "{{\"id\":\"{}\",\"ts\":{},\"op\":\"{}\",\"status\":\"{}\",\"targets\":\"{}\",\"summary\":\"{}\"}}",
+        json_escape(&entry.id),
+        entry.ts,
+        json_escape(&entry.op),
+        json_escape(&entry.status),
+        json_escape(&entry.targets),
+        json_escape(&entry.summary)
+    )
+}
+
 fn escape(input: &str) -> String {
     input
         .replace('\\', "\\\\")
@@ -129,6 +150,9 @@ pub fn record(
 
 pub fn show(global: &GlobalFlags, args: &[String]) -> Result<()> {
     let entries = read_entries(global)?;
+    if global.json {
+        return show_json(&entries, args);
+    }
     if entries.is_empty() {
         println!("No history entries found.");
         return Ok(());
@@ -158,6 +182,49 @@ pub fn show(global: &GlobalFlags, args: &[String]) -> Result<()> {
     println!("  rustpack history");
     println!("  rustpack history <limit>");
     println!("  rustpack history show <id>");
+    Ok(())
+}
+
+fn show_json(entries: &[Entry], args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        let start = entries.len().saturating_sub(20);
+        let payload = entries[start..]
+            .iter()
+            .rev()
+            .map(entry_json)
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("[{}]", payload);
+        return Ok(());
+    }
+    if args[0] == "show" {
+        if args.len() < 2 {
+            println!("{{\"error\":\"usage: rustpack history show <id>\"}}");
+            return Ok(());
+        }
+        let id = &args[1];
+        if let Some(entry) = entries.iter().find(|e| &e.id == id) {
+            println!("{}", entry_json(entry));
+        } else {
+            println!(
+                "{{\"error\":\"history entry not found\",\"id\":\"{}\"}}",
+                json_escape(id)
+            );
+        }
+        return Ok(());
+    }
+    if let Ok(limit) = args[0].parse::<usize>() {
+        let start = entries.len().saturating_sub(limit.max(1));
+        let payload = entries[start..]
+            .iter()
+            .rev()
+            .map(entry_json)
+            .collect::<Vec<_>>()
+            .join(",");
+        println!("[{}]", payload);
+        return Ok(());
+    }
+    println!("{{\"error\":\"usage: rustpack history [<limit>|show <id>]\"}}");
     Ok(())
 }
 

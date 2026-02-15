@@ -39,6 +39,23 @@ fn print_no_results() {
     println!("{}", "No results found".yellow());
 }
 
+fn json_escape(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn json_array(items: Vec<String>) -> String {
+    items
+        .into_iter()
+        .map(|v| format!("\"{}\"", json_escape(&v)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn print_pkg_row(
     global: &GlobalFlags,
     repo: Option<&str>,
@@ -76,7 +93,41 @@ fn print_pkg_row(
     }
 }
 
-fn print_pkg_info(pkg: &Package, is_local: bool) {
+fn pkg_info_json(pkg: &Package, is_local: bool) -> String {
+    let db_name = pkg.db().map(|db| db.name()).unwrap_or("unknown");
+    let mut out = String::new();
+    out.push_str("{");
+    out.push_str(format!("\"name\":\"{}\"", json_escape(pkg.name())).as_str());
+    out.push_str(format!(",\"version\":\"{}\"", json_escape(pkg.version().as_ref())).as_str());
+    out.push_str(format!(",\"description\":\"{}\"", json_escape(pkg.desc().unwrap_or("None"))).as_str());
+    out.push_str(format!(",\"architecture\":\"{}\"", json_escape(pkg.arch().unwrap_or("unknown"))).as_str());
+    out.push_str(format!(",\"url\":\"{}\"", json_escape(pkg.url().unwrap_or("None"))).as_str());
+    let licenses = pkg.licenses().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    let groups = pkg.groups().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    let depends = pkg.depends().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    let optdepends = pkg.optdepends().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    out.push_str(format!(",\"licenses\":[{}]", json_array(licenses)).as_str());
+    out.push_str(format!(",\"groups\":[{}]", json_array(groups)).as_str());
+    out.push_str(format!(",\"depends\":[{}]", json_array(depends)).as_str());
+    out.push_str(format!(",\"optdepends\":[{}]", json_array(optdepends)).as_str());
+    if is_local {
+        out.push_str(format!(",\"install_reason\":\"{:?}\"", pkg.reason()).as_str());
+        out.push_str(format!(",\"install_date\":{}", pkg.install_date().unwrap_or(0)).as_str());
+        out.push_str(format!(",\"installed_size\":{}", pkg.isize()).as_str());
+    } else {
+        out.push_str(format!(",\"repository\":\"{}\"", json_escape(db_name)).as_str());
+        out.push_str(format!(",\"download_size\":{}", pkg.download_size()).as_str());
+        out.push_str(format!(",\"installed_size\":{}", pkg.isize()).as_str());
+    }
+    out.push('}');
+    out
+}
+
+fn print_pkg_info(pkg: &Package, is_local: bool, global: &GlobalFlags) {
+    if global.json {
+        println!("{}", pkg_info_json(pkg, is_local));
+        return;
+    }
     let db_name = pkg.db().map(|db| db.name()).unwrap_or("unknown");
     println!("Name            : {}", pkg.name());
     println!("Version         : {}", pkg.version());
@@ -187,7 +238,7 @@ pub fn show_package_info(global: &GlobalFlags, package_name: &str) -> Result<()>
     let handle = alpm_ops::init_handle(global)?;
     let pkg = alpm_ops::find_local_pkg(&handle, package_name)
         .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", package_name))?;
-    print_pkg_info(pkg, true);
+    print_pkg_info(pkg, true, global);
     Ok(())
 }
 
@@ -195,7 +246,25 @@ pub fn show_sync_package_info(global: &GlobalFlags, package_name: &str) -> Resul
     let handle = alpm_ops::init_handle(global)?;
     let pkg = alpm_ops::find_sync_pkg(&handle, package_name)
         .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", package_name))?;
-    print_pkg_info(pkg, false);
+    print_pkg_info(pkg, false, global);
+    Ok(())
+}
+
+pub fn show_local_package_infos(global: &GlobalFlags, package_names: &[String]) -> Result<()> {
+    if !global.json {
+        for pkg in package_names {
+            show_package_info(global, pkg)?;
+        }
+        return Ok(());
+    }
+    let handle = alpm_ops::init_handle(global)?;
+    let mut items = Vec::new();
+    for package_name in package_names {
+        let pkg = alpm_ops::find_local_pkg(&handle, package_name)
+            .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", package_name))?;
+        items.push(pkg_info_json(pkg, true));
+    }
+    println!("[{}]", items.join(","));
     Ok(())
 }
 
@@ -289,6 +358,23 @@ pub fn list_manual_packages(global: &GlobalFlags) -> Result<()> {
 pub fn list_explicit_packages(global: &GlobalFlags) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let localdb = handle.localdb();
+    if global.json {
+        let mut rows = Vec::new();
+        for pkg in localdb.pkgs().iter() {
+            if pkg.reason() == PackageReason::Explicit {
+                rows.push(format!(
+                    "{{\"name\":\"{}\",\"version\":\"{}\",\"description\":\"{}\",\"architecture\":\"{}\",\"installed_size\":{}}}",
+                    json_escape(pkg.name()),
+                    json_escape(pkg.version().as_ref()),
+                    json_escape(pkg.desc().unwrap_or("")),
+                    json_escape(pkg.arch().unwrap_or("unknown")),
+                    pkg.isize()
+                ));
+            }
+        }
+        println!("[{}]", rows.join(","));
+        return Ok(());
+    }
     
     print_section_header(global, "Explicitly installed packages", None);
     let mut count = 0usize;
@@ -318,6 +404,26 @@ pub fn list_explicit_packages(global: &GlobalFlags) -> Result<()> {
 pub fn query_explicit_packages(global: &GlobalFlags, packages: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let localdb = handle.localdb();
+    if global.json {
+        let mut rows = Vec::new();
+        for pkg_name in packages {
+            let pkg = localdb
+                .pkg(pkg_name.as_str())
+                .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", pkg_name))?;
+            if pkg.reason() == PackageReason::Explicit {
+                rows.push(format!(
+                    "{{\"name\":\"{}\",\"version\":\"{}\",\"description\":\"{}\",\"architecture\":\"{}\",\"installed_size\":{}}}",
+                    json_escape(pkg.name()),
+                    json_escape(pkg.version().as_ref()),
+                    json_escape(pkg.desc().unwrap_or("")),
+                    json_escape(pkg.arch().unwrap_or("unknown")),
+                    pkg.isize()
+                ));
+            }
+        }
+        println!("[{}]", rows.join(","));
+        return Ok(());
+    }
     
     print_section_header(global, "Explicit package query", Some(&packages.join(" ")));
     let mut count = 0usize;

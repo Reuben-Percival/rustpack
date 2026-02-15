@@ -3,8 +3,8 @@ _rustpack() {
     local cur prev words cword
     _init_completion || return
 
-    local ops="-S -Q -R -U doctor history"
-    local global_opts="--help -h --test --dry-run --noconfirm --needed --nodeps --noscriptlet --overwrite --asdeps --asexplicit --root --dbpath --cachedir --strict --insecure-skip-signatures --compact --verbose --aur --paru --"
+    local ops="-S -Q -R -U --why doctor history"
+    local global_opts="--help -h --test --dry-run --noconfirm --needed --nodeps --noscriptlet --overwrite --asdeps --asexplicit --root --dbpath --cachedir --strict --insecure-skip-signatures --compact --verbose --json --aur --paru --"
     local s_opts="-Sy -Su -Syu -Ss -Si -Sc -Scc -Sd -Sdd"
     local q_opts="-Qi -Qs -Ql -Qm -Qo -Qe -Qr"
     local r_opts="-Rs -Rn -Rd -Rdd"

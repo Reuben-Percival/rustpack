@@ -6,10 +6,11 @@ on:
   pull_request:
 
 jobs:
-  build-and-test:
+  arch-verify:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,10 +19,50 @@ jobs:
         run: |
           pacman-key --init
           pacman-key --populate archlinux
-          pacman -Syu --noconfirm --needed base-devel rust cargo pkgconf clang git
+          pacman -Syu --noconfirm --needed base-devel rust cargo pkgconf clang git bash-completion zsh fish man-db
+
+      - name: Shell script syntax checks
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n completions/rustpack.bash
 
       - name: Build check
         run: cargo check
 
       - name: Tests
         run: cargo test --all
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Install rustpack and assets
+        run: ./install.sh --skip-build
+
+      - name: Verify installed artifacts
+        run: |
+          test -x /usr/local/bin/rustpack
+          test -f /usr/local/share/man/man8/rustpack.8
+          test -f /usr/share/bash-completion/completions/rustpack
+          test -f /usr/share/zsh/site-functions/_rustpack
+          test -f /usr/share/fish/vendor_completions.d/rustpack.fish
+
+      - name: CLI smoke tests (installed binary)
+        run: |
+          /usr/local/bin/rustpack --help >/tmp/help.txt
+          grep -q -- "--why <pkg>" /tmp/help.txt
+          grep -q -- "--json" /tmp/help.txt
+          /usr/local/bin/rustpack history --json >/tmp/history.json
+          /usr/local/bin/rustpack -Qe --json >/tmp/qe.json
+          /usr/local/bin/rustpack -Qi bash --json >/tmp/qi.json
+          /usr/local/bin/rustpack --why bash >/tmp/why.txt
+
+      - name: Uninstall rustpack and assets
+        run: |
+          ./uninstall.sh --dry-run
+          ./uninstall.sh --yes
+          test ! -e /usr/local/bin/rustpack
+          test ! -e /usr/local/share/man/man8/rustpack.8
+          test ! -e /usr/share/bash-completion/completions/rustpack
+          test ! -e /usr/share/zsh/site-functions/_rustpack
+          test ! -e /usr/share/fish/vendor_completions.d/rustpack.fish
