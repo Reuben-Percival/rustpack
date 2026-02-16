@@ -16,6 +16,9 @@ pub struct GlobalFlags {
     pub json: bool,
     pub compact: bool,
     pub verbose: bool,
+    pub doctor_fix: bool,
+    pub parallel_downloads: Option<u32>,
+    pub disable_download_timeout: bool,
 }
 
 #[derive(Default, Clone)]

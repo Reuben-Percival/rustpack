@@ -1,13 +1,13 @@
+use alpm::{Alpm, DownloadEvent, Progress, SigLevel, Usage};
 use anyhow::{Context, Result, bail};
-use alpm::{Alpm, SigLevel, Usage, DownloadEvent, Progress};
 use colored::Colorize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::config::{self, PacmanConfig};
 use crate::cli::GlobalFlags;
+use crate::config::{self, PacmanConfig};
 use crate::utils;
 
 pub(crate) fn parse_siglevel(input: Option<&String>) -> Option<SigLevel> {
@@ -21,7 +21,7 @@ pub(crate) fn parse_siglevel(input: Option<&String>) -> Option<SigLevel> {
     if s.contains("Never") {
         return Some(SigLevel::NONE);
     }
-    
+
     let mut level = SigLevel::NONE;
     let tokens = s.split_whitespace().collect::<Vec<_>>();
     for token in tokens {
@@ -48,29 +48,41 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
         handle.add_cachedir(config.cache_dir.as_str())?;
     }
     handle.set_check_space(config.check_space);
-    
+
     if let Some(ref log_file) = config.log_file {
         handle.set_logfile(log_file.as_str())?;
     } else {
         handle.set_logfile("/var/log/pacman.log")?;
     }
     handle.set_use_syslog(config.use_syslog);
-    
+
     if let Some(ref gpg_dir) = config.gpg_dir {
         handle.set_gpgdir(gpg_dir.as_str())?;
     } else {
         handle.set_gpgdir("/etc/pacman.d/gnupg")?;
     }
-    
+    if let Some(n) = global.parallel_downloads.or(config.parallel_downloads) {
+        if n > 0 {
+            handle.set_parallel_downloads(n);
+        }
+    }
+    if global.disable_download_timeout || config.disable_download_timeout {
+        handle.set_disable_dl_timeout(true);
+    }
+
     let arch_for_url = if !config.architectures.is_empty() {
         let first = config.architectures[0].as_str();
-        if first == "auto" { utils::get_arch() } else { first.to_string() }
+        if first == "auto" {
+            utils::get_arch()
+        } else {
+            first.to_string()
+        }
     } else {
         utils::get_arch()
     };
 
     let (arch_base, arch_v3, arch_v4) = utils::arch_variants(arch_for_url.as_str());
-    
+
     let mut added = std::collections::HashSet::new();
     let mut add_arch = |value: String| -> Result<()> {
         if added.insert(value.clone()) {
@@ -93,7 +105,7 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
     add_arch(arch_base.clone())?;
     add_arch(arch_v3.clone())?;
     add_arch(arch_v4.clone())?;
-    
+
     if global.insecure_skip_signatures {
         handle.set_default_siglevel(SigLevel::NONE)?;
         handle.set_local_file_siglevel(SigLevel::NONE)?;
@@ -109,13 +121,13 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
             handle.set_remote_file_siglevel(sig)?;
         }
     }
-    
+
     if !config.hook_dirs.is_empty() {
         handle.set_hookdirs(config.hook_dirs.iter().map(|s| s.as_str()))?;
     } else {
         handle.set_hookdirs(["/etc/pacman.d/hooks", "/usr/share/libalpm/hooks"].iter())?;
     }
-    
+
     for repo in &config.repositories {
         let repo_sig = if global.insecure_skip_signatures {
             SigLevel::NONE
@@ -125,18 +137,20 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
         let db = handle.register_syncdb_mut(repo.name.as_str(), repo_sig)?;
         db.set_usage(Usage::ALL)?;
         for server in &repo.servers {
-            let url = config::expand_server_url(server, &repo.name, &arch_for_url, &arch_v3, &arch_v4);
+            let url =
+                config::expand_server_url(server, &repo.name, &arch_for_url, &arch_v3, &arch_v4);
             db.add_server(url)?;
         }
     }
-    
+
     for pattern in &global.overwrite {
         handle.add_overwrite_file(pattern.as_str())?;
     }
 
     // Progress callbacks
-    handle.set_dl_cb(DownloadState::default(), |filename, event, state| {
-        match event.event() {
+    handle.set_dl_cb(
+        DownloadState::default(),
+        |filename, event, state| match event.event() {
             DownloadEvent::Init(_) => {
                 state.note_start(filename);
             }
@@ -159,35 +173,48 @@ fn configure_handle(handle: &mut Alpm, config: &PacmanConfig, global: &GlobalFla
                     }
                 }
             }
+            DownloadEvent::Retry(r) => {
+                if state.note_retry(filename) {
+                    let mode = if r.resume { "resume" } else { "restart" };
+                    println!(
+                        "\r:: {} {} ({})",
+                        "Retrying".yellow().bold(),
+                        filename,
+                        mode
+                    );
+                }
+            }
             DownloadEvent::Completed(_) => {
                 if state.note_complete(filename) {
                     println!("\r:: {} {}", "Downloaded".green().bold(), filename);
                 }
             }
-            _ => {}
-        }
-    });
+        },
+    );
 
-    handle.set_progress_cb(TransState::default(), |progress, pkgname, percent, howmany, current, state| {
-        if state.should_print(progress, pkgname, percent, current, howmany) {
-            let label = progress_label(progress);
-            let bar = progress_bar(percent, 28);
-            print!(
-                "\r:: {} {} {} {}% ({}/{})",
-                label.cyan().bold(),
-                pkgname,
-                bar,
-                percent,
-                current,
-                howmany
-            );
-            let _ = io::stdout().flush();
-            if percent >= 100 {
-                println!();
+    handle.set_progress_cb(
+        TransState::default(),
+        |progress, pkgname, percent, howmany, current, state| {
+            if state.should_print(progress, pkgname, percent, current, howmany) {
+                let label = progress_label(progress);
+                let bar = progress_bar(percent, 28);
+                print!(
+                    "\r:: {} {} {} {}% ({}/{})",
+                    label.cyan().bold(),
+                    pkgname,
+                    bar,
+                    percent,
+                    current,
+                    howmany
+                );
+                let _ = io::stdout().flush();
+                if percent >= 100 {
+                    println!();
+                }
             }
-        }
-    });
-    
+        },
+    );
+
     Ok(())
 }
 
@@ -237,12 +264,14 @@ fn enforce_strict_config(config: &PacmanConfig, global: &GlobalFlags) -> Result<
 struct DownloadState {
     last_percent: HashMap<String, i32>,
     completed: HashMap<String, bool>,
+    retries: HashMap<String, usize>,
 }
 
 impl DownloadState {
     fn note_start(&mut self, filename: &str) {
         self.last_percent.remove(filename);
         self.completed.remove(filename);
+        self.retries.remove(filename);
     }
 
     fn should_print(&mut self, filename: &str, percent: i32) -> bool {
@@ -263,6 +292,12 @@ impl DownloadState {
             *entry = true;
             true
         }
+    }
+
+    fn note_retry(&mut self, filename: &str) -> bool {
+        let entry = self.retries.entry(filename.to_string()).or_insert(0);
+        *entry += 1;
+        *entry <= 3
     }
 }
 
@@ -352,10 +387,7 @@ pub fn ensure_db_unlocked(global: &GlobalFlags) -> Result<()> {
     let config = effective_config(global)?;
     let lock_path = Path::new(&config.db_path).join("db.lck");
     if lock_path.exists() {
-        bail!(
-            "database is locked (found {})",
-            lock_path.to_string_lossy()
-        );
+        bail!("database is locked (found {})", lock_path.to_string_lossy());
     }
     Ok(())
 }
@@ -393,7 +425,7 @@ pub fn preflight_transaction(global: &GlobalFlags) -> Result<()> {
     let pubring_kbx = Path::new(&gpg_path).join("pubring.kbx");
     let pubring_gpg = Path::new(&gpg_path).join("pubring.gpg");
     let trustdb = Path::new(&gpg_path).join("trustdb.gpg");
-    
+
     if !Path::new(&gpg_path).exists() {
         bail!(
             "keyring directory missing at {} (run pacman-key --init and repopulate keyrings)",
@@ -409,7 +441,7 @@ pub fn preflight_transaction(global: &GlobalFlags) -> Result<()> {
     if !trustdb.exists() {
         bail!("keyring trustdb missing at {}", trustdb.to_string_lossy());
     }
-    
+
     let distro = detect_distro(root);
     let handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
         .context("Failed to initialize libalpm handle for preflight package checks")?;

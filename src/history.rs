@@ -249,11 +249,7 @@ fn print_list(entries: &[Entry], limit: usize) {
         };
         println!(
             "{:<20} {:<12} {:<14} {:<10} {}",
-            e.id,
-            e.ts,
-            e.op,
-            status,
-            e.targets
+            e.id, e.ts, e.op, status, e.targets
         );
     }
 }

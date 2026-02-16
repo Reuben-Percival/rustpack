@@ -20,6 +20,9 @@ Sync/install operation against configured repositories.
 .B -Q
 Query installed packages.
 .TP
+.B -D
+Set install reason in local package database (\fB--asdeps\fR or \fB--asexplicit\fR).
+.TP
 .B -R
 Remove installed packages.
 .TP
@@ -55,7 +58,7 @@ Skip scriptlets (sync/local install only).
 Allow file overwrite conflicts.
 .TP
 .B --asdeps, --asexplicit
-Set install reason for sync/install targets.
+Set install reason for sync/install targets or with \fB-D\fR.
 .TP
 .B --root \fIPATH\fR
 Use alternate root directory.
@@ -65,6 +68,15 @@ Use alternate database path.
 .TP
 .B --cachedir \fIPATH\fR
 Use alternate package cache path.
+.TP
+.B --parallel-downloads \fIN\fR
+Set ALPM parallel download streams.
+.TP
+.B --disable-download-timeout
+Disable ALPM low-speed download timeout.
+.TP
+.B --fix
+Apply safe automatic remediations for doctor checks (doctor operation only).
 .TP
 .B --strict
 Enable stricter safety policy and reject dangerous flag combinations.
@@ -85,7 +97,9 @@ Emit machine-readable JSON output for supported commands.
 .SS Sync (-S)
 .B -Sy, -Su, -Syu, -Ss, -Si, -Sc, -Scc, -Sd, -Sdd
 .SS Query (-Q)
-.B -Qi, -Qs, -Ql, -Qm, -Qo, -Qe, -Qr
+.B -Qi, -Qs, -Ql, -Qm, -Qo, -Qe, -Qr, -Qk
+.SS Database (-D)
+.B --asdeps, --asexplicit
 .SS Remove (-R)
 .B -Rs, -Rn, -Rd, -Rdd
 .SS Local Install (-U)
@@ -103,6 +117,12 @@ Refresh repositories and full system upgrade.
 .TP
 .B rustpack -Qe
 List explicitly installed packages.
+.TP
+.B rustpack -Qk bash
+Check installed files for bash.
+.TP
+.B sudo rustpack -D --asdeps bash
+Mark bash as dependency-installed.
 .TP
 .B rustpack history show <id>
 Show details for one history entry.

@@ -22,7 +22,7 @@ Active development project. Use carefully on production systems and always revie
 
 ## Features
 
-- Pacman-like operation flags: `-S`, `-Q`, `-R`, `-U`.
+- Pacman-like operation flags: `-S`, `-Q`, `-D`, `-R`, `-U`.
 - Full sync/upgrade path: `-Sy`, `-Su`, `-Syu`.
 - Repo and local queries:
   - Search repos / installed
@@ -45,6 +45,8 @@ Active development project. Use carefully on production systems and always revie
 - Smarter sync target resolution errors:
   - Shows provider package suggestions and close repo matches when a target is not found.
 - `doctor` command for package-manager health diagnostics.
+- `doctor --fix` safe auto-remediation for stale lock and missing cache directory.
+- `-Qk` installed file presence checks.
 - Optional AUR passthrough via `paru` (`--aur` / `--paru`).
 
 ## Install
@@ -89,6 +91,7 @@ rustpack --aur -S spotify
 - `-S` sync/install from configured repositories
 - `-Q` query installed package database
 - `-R` remove installed packages
+- `-D` set install reason for installed packages (`--asdeps` / `--asexplicit`)
 - `-U` install local package file(s)
 - `--why <pkg>` explain why a package is installed (dependency chain to explicit packages)
 - `doctor` run environment/config diagnostics
@@ -114,6 +117,7 @@ rustpack --aur -S spotify
 - `-Qo` find package owning a file
 - `-Qe` list explicitly installed packages
 - `-Qr` show reverse dependencies
+- `-Qk` check installed files exist on disk
 
 ### `-R` sub-flags
 
@@ -138,6 +142,8 @@ rustpack --aur -S spotify
 - `--root <path>` override root directory
 - `--dbpath <path>` override package database path
 - `--cachedir <path>` override cache directory
+- `--parallel-downloads <n>` tune ALPM parallel download streams
+- `--disable-download-timeout` disable ALPM low-speed download timeout
 - `--strict` enforce stronger safety policy
 - `--insecure-skip-signatures` disable package/database signature checks (emergency recovery only)
 - `--compact` reduced output
@@ -159,7 +165,11 @@ sudo rustpack -Syu
 rustpack -Qi bash
 rustpack -Qo /usr/bin/vi
 rustpack -Qr glibc
+rustpack -Qk bash
 rustpack --why libva
+
+# Change install reason metadata
+sudo rustpack -D --asdeps firefox
 
 # Remove with dependencies
 sudo rustpack -Rs firefox
@@ -169,6 +179,9 @@ sudo rustpack -U ./example.pkg.tar.zst
 
 # Safe simulation
 sudo rustpack -Syu --test
+
+# Run diagnostics and apply safe fixes
+sudo rustpack doctor --fix
 ```
 
 ## Safety Model

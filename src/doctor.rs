@@ -2,6 +2,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process;
 
 use crate::alpm_ops;
 use crate::cli::GlobalFlags;
@@ -23,7 +24,13 @@ struct Report {
 
 impl Report {
     fn new(json: bool) -> Self {
-        Self { ok: 0, warn: 0, fail: 0, checks: Vec::new(), json }
+        Self {
+            ok: 0,
+            warn: 0,
+            fail: 0,
+            checks: Vec::new(),
+            json,
+        }
     }
 
     fn ok(&mut self, label: &str) {
@@ -84,6 +91,55 @@ fn detect_distro(root: &str) -> Distro {
     Distro::Other
 }
 
+fn active_package_manager_processes() -> Vec<String> {
+    let mut found = Vec::new();
+    let self_pid = process::id().to_string();
+    let entries = match fs::read_dir("/proc") {
+        Ok(v) => v,
+        Err(_) => return found,
+    };
+    let names = [
+        "pacman", "rustpack", "paru", "yay", "pamac", "trizen", "pikaur",
+    ];
+    for entry in entries.flatten() {
+        let pid = match entry.file_name().to_str() {
+            Some(v) if v.chars().all(|c| c.is_ascii_digit()) => v.to_string(),
+            _ => continue,
+        };
+        if pid == self_pid {
+            continue;
+        }
+        let comm = fs::read_to_string(entry.path().join("comm"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let cmdline = fs::read(entry.path().join("cmdline"))
+            .map(|v| {
+                String::from_utf8_lossy(&v)
+                    .replace('\0', " ")
+                    .to_ascii_lowercase()
+            })
+            .unwrap_or_default();
+        if names
+            .iter()
+            .any(|n| comm.contains(n) || cmdline.contains(n))
+        {
+            found.push(format!("pid {} ({})", pid, comm.trim()));
+        }
+    }
+    found
+}
+
+fn try_fix_stale_lock(lock_path: &Path) -> Result<bool> {
+    if !lock_path.exists() {
+        return Ok(false);
+    }
+    if !active_package_manager_processes().is_empty() {
+        return Ok(false);
+    }
+    fs::remove_file(lock_path)?;
+    Ok(true)
+}
+
 pub fn run(global: &GlobalFlags) -> Result<()> {
     let config = alpm_ops::effective_config(global)?;
     let mut report = Report::new(global.json);
@@ -99,41 +155,71 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
         println!("Root: {}", config.root_dir);
         println!("DBPath: {}", config.db_path);
         println!("CacheDir: {}", config.cache_dir);
+        if global.doctor_fix {
+            println!("{}", "Fix mode: enabled (safe fixes only)".yellow().bold());
+        }
         println!();
     }
-    
+
     if Path::new(config.root_dir.as_str()).exists() {
         report.ok("Root directory exists");
     } else {
         report.fail("Root directory does not exist");
     }
-    
+
     if Path::new(config.db_path.as_str()).exists() {
         report.ok("Package database path exists");
     } else {
         report.fail("Package database path does not exist");
     }
-    
+
     let local_db = Path::new(config.db_path.as_str()).join("local");
     if local_db.exists() {
         report.ok("Local package database exists");
     } else {
         report.fail("Local package database is missing");
     }
-    
+
     let lock_path = Path::new(config.db_path.as_str()).join("db.lck");
     if lock_path.exists() {
-        report.warn("Database lock file exists (possible active package manager or stale lock)");
+        if global.doctor_fix {
+            match try_fix_stale_lock(&lock_path) {
+                Ok(true) => report.ok("No active database lock file (removed stale lock)"),
+                Ok(false) => {
+                    let active = active_package_manager_processes();
+                    if active.is_empty() {
+                        report.warn("Database lock file exists (could not auto-remove lock)");
+                    } else {
+                        report.warn(
+                            format!(
+                                "Database lock file exists and active package manager processes were found: {}",
+                                active.join(", ")
+                            )
+                            .as_str(),
+                        );
+                    }
+                }
+                Err(_) => report.warn("Database lock file exists (failed to remove stale lock)"),
+            }
+        } else {
+            report
+                .warn("Database lock file exists (possible active package manager or stale lock)");
+        }
     } else {
         report.ok("No active database lock file");
     }
-    
+
     if Path::new(config.cache_dir.as_str()).exists() {
         report.ok("Package cache path exists");
+    } else if global.doctor_fix {
+        match fs::create_dir_all(config.cache_dir.as_str()) {
+            Ok(_) => report.ok("Package cache path exists (created missing directory)"),
+            Err(_) => report.warn("Package cache path is missing (failed to create directory)"),
+        }
     } else {
         report.warn("Package cache path is missing");
     }
-    
+
     let gpg_dir = config.gpg_dir.as_deref().unwrap_or("/etc/pacman.d/gnupg");
     let gpg_dir_path = root_join(config.root_dir.as_str(), gpg_dir);
     if gpg_dir_path.exists() {
@@ -141,7 +227,7 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
     } else {
         report.fail("GPG directory is missing");
     }
-    
+
     let pubring_kbx = gpg_dir_path.join("pubring.kbx");
     let pubring_gpg = gpg_dir_path.join("pubring.gpg");
     if pubring_kbx.exists() || pubring_gpg.exists() {
@@ -149,20 +235,20 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
     } else {
         report.fail("No keyring public keyring file found (pubring.kbx/pubring.gpg)");
     }
-    
+
     let trustdb = gpg_dir_path.join("trustdb.gpg");
     if trustdb.exists() {
         report.ok("Keyring trustdb exists");
     } else {
         report.warn("Keyring trustdb.gpg not found");
     }
-    
+
     if config.repositories.is_empty() {
         report.fail("No repositories configured");
     } else {
         report.ok("Repositories configured");
     }
-    
+
     let mut repo_names = Vec::new();
     let mut insecure_server_count = 0usize;
     for repo in &config.repositories {
@@ -171,7 +257,11 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
             report.fail(format!("Repository '{}' has no servers", repo.name).as_str());
             continue;
         }
-        let https_count = repo.servers.iter().filter(|s| s.starts_with("https://")).count();
+        let https_count = repo
+            .servers
+            .iter()
+            .filter(|s| s.starts_with("https://"))
+            .count();
         if https_count == 0 {
             insecure_server_count += 1;
         }
@@ -187,11 +277,11 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
             );
         }
     }
-    
+
     if insecure_server_count == 0 && !config.repositories.is_empty() {
         report.ok("All repositories include HTTPS mirrors");
     }
-    
+
     match distro {
         Distro::Arch => {
             let has_core = repo_names.iter().any(|r| r == "core");
@@ -207,11 +297,20 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
             if has_cachy_repo {
                 report.ok("CachyOS repositories detected");
             } else {
-                report.warn("No CachyOS repositories detected (expected for optimized CachyOS setups)");
+                report.warn(
+                    "No CachyOS repositories detected (expected for optimized CachyOS setups)",
+                );
             }
-            let has_arch_opt = config.repositories.iter().flat_map(|r| r.servers.iter()).any(|s| {
-                s.contains("$arch_v3") || s.contains("$arch_v4") || s.contains("x86_64_v3") || s.contains("x86_64_v4")
-            });
+            let has_arch_opt = config
+                .repositories
+                .iter()
+                .flat_map(|r| r.servers.iter())
+                .any(|s| {
+                    s.contains("$arch_v3")
+                        || s.contains("$arch_v4")
+                        || s.contains("x86_64_v3")
+                        || s.contains("x86_64_v4")
+                });
             if has_arch_opt {
                 report.ok("Architecture-optimized mirror patterns detected (v3/v4)");
             } else {
@@ -219,10 +318,11 @@ pub fn run(global: &GlobalFlags) -> Result<()> {
             }
         }
         Distro::Other => {
-            report.warn("Distro is not recognized as Arch/CachyOS; only generic checks were applied");
+            report
+                .warn("Distro is not recognized as Arch/CachyOS; only generic checks were applied");
         }
     }
-    
+
     if global.json {
         let checks = report
             .checks

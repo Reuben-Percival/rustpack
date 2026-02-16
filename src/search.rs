@@ -1,7 +1,8 @@
-use anyhow::Result;
 use alpm::{Package, PackageReason};
+use anyhow::{Result, bail};
 use colored::Colorize;
 use std::collections::VecDeque;
+use std::path::Path;
 
 use crate::alpm_ops;
 use crate::cli::GlobalFlags;
@@ -32,7 +33,11 @@ fn print_match_count(global: &GlobalFlags, count: usize) {
     if global.compact {
         return;
     }
-    println!("\n{} {}", "Matches:".cyan().bold(), count.to_string().white().bold());
+    println!(
+        "\n{} {}",
+        "Matches:".cyan().bold(),
+        count.to_string().white().bold()
+    );
 }
 
 fn print_no_results() {
@@ -99,13 +104,41 @@ fn pkg_info_json(pkg: &Package, is_local: bool) -> String {
     out.push_str("{");
     out.push_str(format!("\"name\":\"{}\"", json_escape(pkg.name())).as_str());
     out.push_str(format!(",\"version\":\"{}\"", json_escape(pkg.version().as_ref())).as_str());
-    out.push_str(format!(",\"description\":\"{}\"", json_escape(pkg.desc().unwrap_or("None"))).as_str());
-    out.push_str(format!(",\"architecture\":\"{}\"", json_escape(pkg.arch().unwrap_or("unknown"))).as_str());
+    out.push_str(
+        format!(
+            ",\"description\":\"{}\"",
+            json_escape(pkg.desc().unwrap_or("None"))
+        )
+        .as_str(),
+    );
+    out.push_str(
+        format!(
+            ",\"architecture\":\"{}\"",
+            json_escape(pkg.arch().unwrap_or("unknown"))
+        )
+        .as_str(),
+    );
     out.push_str(format!(",\"url\":\"{}\"", json_escape(pkg.url().unwrap_or("None"))).as_str());
-    let licenses = pkg.licenses().iter().map(|v| v.to_string()).collect::<Vec<_>>();
-    let groups = pkg.groups().iter().map(|v| v.to_string()).collect::<Vec<_>>();
-    let depends = pkg.depends().iter().map(|v| v.to_string()).collect::<Vec<_>>();
-    let optdepends = pkg.optdepends().iter().map(|v| v.to_string()).collect::<Vec<_>>();
+    let licenses = pkg
+        .licenses()
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
+    let groups = pkg
+        .groups()
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
+    let depends = pkg
+        .depends()
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
+    let optdepends = pkg
+        .optdepends()
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
     out.push_str(format!(",\"licenses\":[{}]", json_array(licenses)).as_str());
     out.push_str(format!(",\"groups\":[{}]", json_array(groups)).as_str());
     out.push_str(format!(",\"depends\":[{}]", json_array(depends)).as_str());
@@ -134,10 +167,22 @@ fn print_pkg_info(pkg: &Package, is_local: bool, global: &GlobalFlags) {
     println!("Description     : {}", pkg.desc().unwrap_or("None"));
     println!("Architecture    : {}", pkg.arch().unwrap_or("unknown"));
     println!("URL             : {}", pkg.url().unwrap_or("None"));
-    println!("Licenses        : {}", format_list(pkg.licenses().iter().collect()));
-    println!("Groups          : {}", format_list(pkg.groups().iter().collect()));
-    println!("Depends On      : {}", format_list(pkg.depends().iter().collect()));
-    println!("Optional Deps   : {}", format_list(pkg.optdepends().iter().collect()));
+    println!(
+        "Licenses        : {}",
+        format_list(pkg.licenses().iter().collect())
+    );
+    println!(
+        "Groups          : {}",
+        format_list(pkg.groups().iter().collect())
+    );
+    println!(
+        "Depends On      : {}",
+        format_list(pkg.depends().iter().collect())
+    );
+    println!(
+        "Optional Deps   : {}",
+        format_list(pkg.optdepends().iter().collect())
+    );
     if is_local {
         println!("Install Reason  : {:?}", pkg.reason());
         println!("Install Date    : {}", pkg.install_date().unwrap_or(0));
@@ -152,10 +197,14 @@ fn print_pkg_info(pkg: &Package, is_local: bool, global: &GlobalFlags) {
 pub fn search_repos(global: &GlobalFlags, queries: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let query_refs: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
-    
+
     let mut found = false;
     let mut count = 0usize;
-    print_section_header(global, "Searching repositories for:", Some(&queries.join(" ")));
+    print_section_header(
+        global,
+        "Searching repositories for:",
+        Some(&queries.join(" ")),
+    );
     for db in handle.syncdbs().iter() {
         let results = db.search(query_refs.iter())?;
         for pkg in results.iter() {
@@ -173,13 +222,13 @@ pub fn search_repos(global: &GlobalFlags, queries: &[String]) -> Result<()> {
             found = true;
         }
     }
-    
+
     if !found {
         print_no_results();
     } else {
         print_match_count(global, count);
     }
-    
+
     Ok(())
 }
 
@@ -188,7 +237,7 @@ pub fn list_installed(global: &GlobalFlags) -> Result<()> {
     let db = handle.localdb();
     let mut count = 0usize;
     print_section_header(global, "Installed packages", None);
-    
+
     for pkg in db.pkgs().iter() {
         print_pkg_row(
             global,
@@ -202,7 +251,7 @@ pub fn list_installed(global: &GlobalFlags) -> Result<()> {
         count += 1;
     }
     print_match_count(global, count);
-    
+
     Ok(())
 }
 
@@ -210,14 +259,18 @@ pub fn search_installed(global: &GlobalFlags, queries: &[String]) -> Result<()> 
     let handle = alpm_ops::init_handle(global)?;
     let db = handle.localdb();
     let query_refs: Vec<&str> = queries.iter().map(|s| s.as_str()).collect();
-    
+
     let results = db.search(query_refs.iter())?;
     if results.is_empty() {
         print_no_results();
         return Ok(());
     }
-    print_section_header(global, "Searching installed packages for:", Some(&queries.join(" ")));
-    
+    print_section_header(
+        global,
+        "Searching installed packages for:",
+        Some(&queries.join(" ")),
+    );
+
     for pkg in results.iter() {
         print_pkg_row(
             global,
@@ -230,7 +283,7 @@ pub fn search_installed(global: &GlobalFlags, queries: &[String]) -> Result<()> 
         );
     }
     print_match_count(global, results.len());
-    
+
     Ok(())
 }
 
@@ -272,7 +325,7 @@ pub fn query_packages(global: &GlobalFlags, packages: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let db = handle.localdb();
     print_section_header(global, "Package query", Some(&packages.join(" ")));
-    
+
     for pkg_name in packages {
         let pkg = db.pkg(pkg_name.as_str())?;
         print_pkg_row(
@@ -285,19 +338,24 @@ pub fn query_packages(global: &GlobalFlags, packages: &[String]) -> Result<()> {
             Some(pkg.isize()),
         );
     }
-    
+
     Ok(())
 }
 
 pub fn list_package_files(global: &GlobalFlags, packages: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let db = handle.localdb();
-    
+
     for pkg_name in packages {
-        let pkg = db.pkg(pkg_name.as_str())
+        let pkg = db
+            .pkg(pkg_name.as_str())
             .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", pkg_name))?;
         if !global.compact {
-            println!("\n{} {}", "Files for".cyan().bold(), pkg.name().green().bold());
+            println!(
+                "\n{} {}",
+                "Files for".cyan().bold(),
+                pkg.name().green().bold()
+            );
         }
         let files = pkg.files();
         let mut count = 0usize;
@@ -314,7 +372,118 @@ pub fn list_package_files(global: &GlobalFlags, packages: &[String]) -> Result<(
             println!("{} {}", "File count:".cyan().bold(), count);
         }
     }
-    
+
+    Ok(())
+}
+
+fn root_file_path(root: &str, rel: &str) -> String {
+    let trimmed = rel.trim_start_matches('/');
+    if root == "/" {
+        format!("/{}", trimmed)
+    } else {
+        format!("{}/{}", root.trim_end_matches('/'), trimmed)
+    }
+}
+
+pub fn check_package_files(global: &GlobalFlags, package_names: &[String]) -> Result<()> {
+    let handle = alpm_ops::init_handle(global)?;
+    let db = handle.localdb();
+    let config = alpm_ops::effective_config(global)?;
+    let mut missing_total = 0usize;
+    let mut checked_total = 0usize;
+    let mut json_rows = Vec::new();
+
+    let names: Vec<String> = if package_names.is_empty() {
+        db.pkgs().iter().map(|p| p.name().to_string()).collect()
+    } else {
+        package_names.to_vec()
+    };
+
+    for pkg_name in names {
+        let pkg = db
+            .pkg(pkg_name.as_str())
+            .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", pkg_name))?;
+        let mut pkg_checked = 0usize;
+        let mut pkg_missing = Vec::new();
+        for file in pkg.files().files() {
+            let rel = String::from_utf8_lossy(file.name()).to_string();
+            let abs = root_file_path(config.root_dir.as_str(), rel.as_str());
+            pkg_checked += 1;
+            if !Path::new(abs.as_str()).exists() {
+                pkg_missing.push(abs);
+            }
+        }
+        checked_total += pkg_checked;
+        missing_total += pkg_missing.len();
+
+        if global.json {
+            let missing_paths = pkg_missing
+                .iter()
+                .map(|p| format!("\"{}\"", json_escape(p)))
+                .collect::<Vec<_>>()
+                .join(",");
+            json_rows.push(format!(
+                "{{\"name\":\"{}\",\"checked\":{},\"missing\":{},\"ok\":{},\"missing_paths\":[{}]}}",
+                json_escape(pkg.name()),
+                pkg_checked,
+                pkg_missing.len(),
+                if pkg_missing.is_empty() { "true" } else { "false" },
+                missing_paths
+            ));
+            continue;
+        }
+
+        if pkg_missing.is_empty() {
+            if !global.compact {
+                println!(
+                    "{}: {} total files, {} missing files",
+                    pkg.name().green().bold(),
+                    pkg_checked,
+                    0
+                );
+            }
+            continue;
+        }
+        println!(
+            "{}: {} total files, {} missing files",
+            pkg.name().green().bold(),
+            pkg_checked,
+            pkg_missing.len()
+        );
+        for path in pkg_missing {
+            println!("  {}", path.red());
+        }
+    }
+
+    if global.json {
+        println!(
+            "{{\"checked\":{},\"missing\":{},\"packages\":[{}]}}",
+            checked_total,
+            missing_total,
+            json_rows.join(",")
+        );
+        return if missing_total > 0 {
+            bail!("__RUSTPACK_JSON_QK_FAILED__");
+        } else {
+            Ok(())
+        };
+    }
+
+    if missing_total > 0 {
+        bail!(
+            "file check failed: {} missing files across {} checked files",
+            missing_total,
+            checked_total
+        );
+    }
+    if !global.compact {
+        println!(
+            "{} checked={} missing={}",
+            "File check summary:".bold(),
+            checked_total,
+            missing_total
+        );
+    }
     Ok(())
 }
 
@@ -322,7 +491,7 @@ pub fn list_manual_packages(global: &GlobalFlags) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let localdb = handle.localdb();
     let syncdbs = handle.syncdbs();
-    
+
     print_section_header(global, "Foreign packages", None);
     let mut count = 0usize;
     for pkg in localdb.pkgs().iter() {
@@ -351,7 +520,7 @@ pub fn list_manual_packages(global: &GlobalFlags) -> Result<()> {
     } else {
         print_match_count(global, count);
     }
-    
+
     Ok(())
 }
 
@@ -375,7 +544,7 @@ pub fn list_explicit_packages(global: &GlobalFlags) -> Result<()> {
         println!("[{}]", rows.join(","));
         return Ok(());
     }
-    
+
     print_section_header(global, "Explicitly installed packages", None);
     let mut count = 0usize;
     for pkg in localdb.pkgs().iter() {
@@ -397,7 +566,7 @@ pub fn list_explicit_packages(global: &GlobalFlags) -> Result<()> {
     } else {
         print_match_count(global, count);
     }
-    
+
     Ok(())
 }
 
@@ -424,7 +593,7 @@ pub fn query_explicit_packages(global: &GlobalFlags, packages: &[String]) -> Res
         println!("[{}]", rows.join(","));
         return Ok(());
     }
-    
+
     print_section_header(global, "Explicit package query", Some(&packages.join(" ")));
     let mut count = 0usize;
     for pkg_name in packages {
@@ -449,19 +618,23 @@ pub fn query_explicit_packages(global: &GlobalFlags, packages: &[String]) -> Res
     } else {
         print_match_count(global, count);
     }
-    
+
     Ok(())
 }
 
 pub fn query_reverse_dependencies(global: &GlobalFlags, packages: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let localdb = handle.localdb();
-    
+
     for pkg_name in packages {
         let pkg = localdb
             .pkg(pkg_name.as_str())
             .map_err(|_| anyhow::anyhow!("error: package '{}' was not found", pkg_name))?;
-        let revdeps: Vec<String> = pkg.required_by().iter().map(|name| name.to_string()).collect();
+        let revdeps: Vec<String> = pkg
+            .required_by()
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
         if revdeps.is_empty() {
             println!(
                 "{} {}",
@@ -469,13 +642,17 @@ pub fn query_reverse_dependencies(global: &GlobalFlags, packages: &[String]) -> 
                 "has no reverse dependencies".yellow()
             );
         } else {
-            println!("{} {}", pkg.name().green().bold(), "is required by:".cyan().bold());
+            println!(
+                "{} {}",
+                pkg.name().green().bold(),
+                "is required by:".cyan().bold()
+            );
             for dep in revdeps {
                 println!("  {}", dep.white().bold());
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -486,11 +663,11 @@ fn normalize_query_path(path: &str) -> &str {
 pub fn query_owns(global: &GlobalFlags, paths: &[String]) -> Result<()> {
     let handle = alpm_ops::init_handle(global)?;
     let db = handle.localdb();
-    
+
     for input in paths {
         let query = normalize_query_path(input);
         let mut found = false;
-        
+
         for pkg in db.pkgs().iter() {
             let files = pkg.files();
             if files.contains(query).is_some() {
@@ -504,12 +681,12 @@ pub fn query_owns(global: &GlobalFlags, paths: &[String]) -> Result<()> {
                 break;
             }
         }
-        
+
         if !found {
             eprintln!("error: {}", format!("No package owns {}", input).red());
         }
     }
-    
+
     Ok(())
 }
 
@@ -593,7 +770,11 @@ pub fn explain_why(global: &GlobalFlags, package_name: &str) -> Result<()> {
     }
 
     for (idx, chain) in chains.iter().enumerate() {
-        println!("\n{} {}", "Chain".cyan().bold(), (idx + 1).to_string().white().bold());
+        println!(
+            "\n{} {}",
+            "Chain".cyan().bold(),
+            (idx + 1).to_string().white().bold()
+        );
         for (i, node) in chain.iter().enumerate() {
             if i + 1 == chain.len() {
                 println!("  {} {}", node.green().bold(), "(explicit)".yellow());

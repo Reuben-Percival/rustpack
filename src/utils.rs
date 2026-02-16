@@ -34,15 +34,15 @@ pub fn check_command_exists(command: &str) -> bool {
 
 pub fn confirm_action(message: &str) -> bool {
     use std::io::{self, Write};
-    
+
     print!("{}", message);
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
-    
+
     let response = input.trim().to_lowercase();
-    
+
     // Default to yes if empty (like pacman)
     response.is_empty() || matches!(response.as_str(), "y" | "yes")
 }
@@ -50,13 +50,13 @@ pub fn confirm_action(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_get_arch() {
         let arch = get_arch();
         assert!(!arch.is_empty());
     }
-    
+
     #[test]
     fn test_check_command_exists() {
         assert!(check_command_exists("ls"));

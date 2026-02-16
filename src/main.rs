@@ -1,21 +1,22 @@
+mod alpm_ops;
+mod cli;
 mod config;
+mod doctor;
+mod history;
 mod install;
 mod search;
 mod utils;
-mod alpm_ops;
-mod cli;
-mod doctor;
-mod history;
 
+use crate::cli::{GlobalFlags, RemoveFlags};
 use anyhow::Result;
 use colored::Colorize;
 use std::env;
-use crate::cli::{GlobalFlags, RemoveFlags};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Sync,
     Query,
+    Database,
     Remove,
     Upgrade,
     Why,
@@ -42,6 +43,7 @@ struct QueryFlags {
     owns: bool,
     explicit: bool,
     reverse_deps: bool,
+    check_files: bool,
 }
 
 struct ParsedArgs {
@@ -55,7 +57,7 @@ struct ParsedArgs {
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    
+
     // Need at least the program name and one argument
     if args.len() < 2 {
         print_usage();
@@ -82,7 +84,7 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to execute paru: {}", e))?;
         std::process::exit(status.code().unwrap_or(1));
     }
-    
+
     let parsed = match parse_args(&args) {
         Ok(parsed) => parsed,
         Err(message) => {
@@ -92,10 +94,11 @@ fn main() -> Result<()> {
         }
     };
     emit_safety_warnings(&parsed.global);
-    
+
     let run_result = match parsed.op {
         Operation::Sync => handle_sync(&parsed),
         Operation::Query => handle_query(&parsed),
+        Operation::Database => handle_database(&parsed),
         Operation::Remove => handle_remove(&parsed),
         Operation::Upgrade => handle_upgrade(&parsed),
         Operation::Why => handle_why(&parsed),
@@ -110,7 +113,7 @@ fn main() -> Result<()> {
         print_runtime_error(&parsed.global, &err);
         std::process::exit(1);
     }
-    
+
     Ok(())
 }
 
@@ -132,7 +135,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
     let mut in_options = true;
     let mut global = GlobalFlags::default();
     let mut i = 1;
-    
+
     while i < args.len() {
         let arg = &args[i];
         if in_options && arg == "--doctor" {
@@ -182,20 +185,20 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                 global: GlobalFlags::default(),
             });
         }
-        
+
         if in_options && arg == "--" {
             in_options = false;
             i += 1;
             continue;
         }
-        
+
         if in_options && arg.starts_with("--") {
             let (key, value_opt) = if let Some((k, v)) = arg.split_once('=') {
                 (k, Some(v.to_string()))
             } else {
                 (arg.as_str(), None)
             };
-            
+
             match key {
                 "--test" | "--dry-run" => global.test = true,
                 "--noconfirm" => global.noconfirm = true,
@@ -213,7 +216,8 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                             None
                         }
                     });
-                    let value = value.ok_or_else(|| "error: --overwrite requires a value".to_string())?;
+                    let value =
+                        value.ok_or_else(|| "error: --overwrite requires a value".to_string())?;
                     global.overwrite.push(value);
                 }
                 "--root" => {
@@ -225,7 +229,8 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                             None
                         }
                     });
-                    global.root_dir = Some(value.ok_or_else(|| "error: --root requires a value".to_string())?);
+                    global.root_dir =
+                        Some(value.ok_or_else(|| "error: --root requires a value".to_string())?);
                 }
                 "--dbpath" => {
                     let value = value_opt.or_else(|| {
@@ -236,7 +241,8 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                             None
                         }
                     });
-                    global.db_path = Some(value.ok_or_else(|| "error: --dbpath requires a value".to_string())?);
+                    global.db_path =
+                        Some(value.ok_or_else(|| "error: --dbpath requires a value".to_string())?);
                 }
                 "--cachedir" => {
                     let value = value_opt.or_else(|| {
@@ -247,24 +253,49 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                             None
                         }
                     });
-                    global.cache_dir = Some(value.ok_or_else(|| "error: --cachedir requires a value".to_string())?);
+                    global.cache_dir = Some(
+                        value.ok_or_else(|| "error: --cachedir requires a value".to_string())?,
+                    );
                 }
                 "--strict" => global.strict = true,
                 "--insecure-skip-signatures" => global.insecure_skip_signatures = true,
                 "--json" => global.json = true,
                 "--compact" => global.compact = true,
                 "--verbose" => global.verbose = true,
+                "--fix" => global.doctor_fix = true,
+                "--disable-download-timeout" => global.disable_download_timeout = true,
+                "--parallel-downloads" => {
+                    let value = value_opt.or_else(|| {
+                        if i + 1 < args.len() {
+                            i += 1;
+                            Some(args[i].to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    let raw = value.ok_or_else(|| {
+                        "error: --parallel-downloads requires a value".to_string()
+                    })?;
+                    let parsed = raw.parse::<u32>().map_err(|_| {
+                        "error: --parallel-downloads expects a positive integer".to_string()
+                    })?;
+                    if parsed == 0 {
+                        return Err("error: --parallel-downloads must be >= 1".to_string());
+                    }
+                    global.parallel_downloads = Some(parsed);
+                }
                 _ => return Err(format!("error: invalid option '{}'", arg)),
             }
             i += 1;
             continue;
         }
-        
+
         if in_options && arg.starts_with('-') && arg.len() > 1 {
             for ch in arg[1..].chars() {
                 match ch {
                     'S' => set_operation(&mut op, Operation::Sync)?,
                     'Q' => set_operation(&mut op, Operation::Query)?,
+                    'D' => set_operation(&mut op, Operation::Database)?,
                     'R' => set_operation(&mut op, Operation::Remove)?,
                     'U' => set_operation(&mut op, Operation::Upgrade)?,
                     _ => flag_chars.push(ch),
@@ -273,11 +304,11 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             i += 1;
             continue;
         }
-        
+
         targets.push(arg.to_string());
         i += 1;
     }
-    
+
     let op = op.ok_or_else(|| "error: no operation specified (use -h for help)".to_string())?;
     let mut parsed = ParsedArgs {
         op,
@@ -287,7 +318,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
         targets,
         global,
     };
-    
+
     match op {
         Operation::Sync => {
             for ch in flag_chars {
@@ -301,19 +332,21 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     _ => return Err(format!("error: invalid option '-{}' for -S", ch)),
                 }
             }
-            
+
             if parsed.sync.search && parsed.sync.info {
                 return Err("error: only one of -s or -i can be used with -S".to_string());
             }
-            
-            if (parsed.sync.search || parsed.sync.info) && (parsed.sync.refresh || parsed.sync.upgrade) {
+
+            if (parsed.sync.search || parsed.sync.info)
+                && (parsed.sync.refresh || parsed.sync.upgrade)
+            {
                 return Err("error: -s/-i cannot be combined with -y/-u".to_string());
             }
-            
+
             if (parsed.sync.search || parsed.sync.info) && parsed.targets.is_empty() {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
-            
+
             if !parsed.sync.search
                 && !parsed.sync.info
                 && parsed.targets.is_empty()
@@ -323,7 +356,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
-            
+
             if parsed.sync.clean_cache > 0 {
                 if parsed.sync.search
                     || parsed.sync.info
@@ -331,10 +364,12 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     || parsed.sync.upgrade
                     || !parsed.targets.is_empty()
                 {
-                    return Err("error: -Sc/-Scc cannot be combined with other -S options".to_string());
+                    return Err(
+                        "error: -Sc/-Scc cannot be combined with other -S options".to_string()
+                    );
                 }
             }
-            
+
             if parsed.global.asdeps && parsed.global.asexplicit {
                 return Err("error: --asdeps and --asexplicit cannot be used together".to_string());
             }
@@ -349,10 +384,11 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     'o' => parsed.query.owns = true,
                     'e' => parsed.query.explicit = true,
                     'r' => parsed.query.reverse_deps = true,
+                    'k' => parsed.query.check_files = true,
                     _ => return Err(format!("error: invalid option '-{}' for -Q", ch)),
                 }
             }
-            
+
             let mut option_count = 0;
             if parsed.query.info {
                 option_count += 1;
@@ -375,11 +411,17 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             if parsed.query.reverse_deps {
                 option_count += 1;
             }
-            
-            if option_count > 1 {
-                return Err("error: only one of -i, -s, -l, -m, -o, -e, or -r can be used with -Q".to_string());
+            if parsed.query.check_files {
+                option_count += 1;
             }
-            
+
+            if option_count > 1 {
+                return Err(
+                    "error: only one of -i, -s, -l, -m, -o, -e, -r, or -k can be used with -Q"
+                        .to_string(),
+                );
+            }
+
             if (parsed.query.info
                 || parsed.query.search
                 || parsed.query.list_files
@@ -389,9 +431,25 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
-            
+
             if parsed.query.manual && !parsed.targets.is_empty() {
                 return Err("error: -Qm does not take targets".to_string());
+            }
+        }
+        Operation::Database => {
+            if !flag_chars.is_empty() {
+                return Err("error: -D does not accept short sub-flags yet".to_string());
+            }
+            if parsed.targets.is_empty() {
+                return Err("error: no targets specified (use -h for help)".to_string());
+            }
+            if parsed.global.asdeps == parsed.global.asexplicit {
+                return Err(
+                    "error: -D requires exactly one of --asdeps or --asexplicit".to_string()
+                );
+            }
+            if parsed.global.needed || parsed.global.noscriptlet {
+                return Err("error: invalid options for -D".to_string());
             }
         }
         Operation::Remove => {
@@ -403,12 +461,16 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     _ => return Err(format!("error: invalid option '-{}' for -R", ch)),
                 }
             }
-            
+
             if parsed.targets.is_empty() {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
-            
-            if parsed.global.asdeps || parsed.global.asexplicit || parsed.global.needed || parsed.global.noscriptlet {
+
+            if parsed.global.asdeps
+                || parsed.global.asexplicit
+                || parsed.global.needed
+                || parsed.global.noscriptlet
+            {
                 return Err("error: invalid options for -R".to_string());
             }
         }
@@ -419,7 +481,7 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
                     _ => return Err(format!("error: invalid option '-{}' for -U", ch)),
                 }
             }
-            
+
             if parsed.targets.is_empty() {
                 return Err("error: no targets specified (use -h for help)".to_string());
             }
@@ -450,25 +512,37 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
         }
         Operation::Help => {}
     }
-    
+
     if parsed.op != Operation::Sync {
-        if parsed.global.needed || parsed.global.asdeps || parsed.global.asexplicit || parsed.global.noscriptlet {
-            return Err("error: --needed/--asdeps/--asexplicit/--noscriptlet only apply to -S".to_string());
+        if parsed.global.needed || parsed.global.noscriptlet {
+            return Err("error: --needed/--noscriptlet only apply to -S".to_string());
+        }
+        if parsed.op != Operation::Database && (parsed.global.asdeps || parsed.global.asexplicit) {
+            return Err("error: --asdeps/--asexplicit only apply to -S/-D".to_string());
         }
         if !parsed.global.overwrite.is_empty() {
             return Err("error: --overwrite only applies to -S".to_string());
         }
     }
-    
-    if (parsed.op == Operation::Query || parsed.op == Operation::Why) && parsed.global.nodeps > 0
+
+    if (parsed.op == Operation::Query
+        || parsed.op == Operation::Why
+        || parsed.op == Operation::Doctor
+        || parsed.op == Operation::History
+        || parsed.op == Operation::Database)
+        && parsed.global.nodeps > 0
     {
         return Err("error: --nodeps only applies to -S/-R/-U".to_string());
     }
-    
+
+    if parsed.op != Operation::Doctor && parsed.global.doctor_fix {
+        return Err("error: --fix only applies to doctor".to_string());
+    }
+
     if parsed.global.compact && parsed.global.verbose {
         return Err("error: --compact and --verbose cannot be used together".to_string());
     }
-    
+
     if parsed.global.strict {
         if parsed.global.nodeps > 0 {
             return Err("error: --strict disallows --nodeps/-d/-dd".to_string());
@@ -483,84 +557,82 @@ fn parse_args(args: &[String]) -> std::result::Result<ParsedArgs, String> {
             return Err("error: --strict disallows --insecure-skip-signatures".to_string());
         }
     }
-    
+
     Ok(parsed)
 }
 
 fn handle_sync(parsed: &ParsedArgs) -> Result<()> {
     let flags = &parsed.sync;
-    
+
     // Check root for install/upgrade/sync
     if !flags.search && !flags.info && !utils::is_root() {
-        eprintln!("{}", "error: you cannot perform this operation unless you are root.".red());
+        eprintln!(
+            "{}",
+            "error: you cannot perform this operation unless you are root.".red()
+        );
         std::process::exit(1);
     }
-    
+
     if flags.search {
         search_packages(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
     if flags.info {
         for pkg in &parsed.targets {
             show_sync_info(&parsed.global, pkg)?;
         }
         return Ok(());
     }
-    
+
     if flags.clean_cache > 0 {
         alpm_ops::ensure_db_unlocked(&parsed.global)?;
         install::clean_cache(&parsed.global, flags.clean_cache)?;
         return Ok(());
     }
-    
+
     let refresh = flags.refresh;
     let upgrade = flags.upgrade;
     if refresh || upgrade || parsed.targets.is_empty() {
         alpm_ops::preflight_transaction(&parsed.global)?;
-        install::sync_install(
-            &parsed.global,
-            refresh,
-            upgrade,
-            parsed.targets.as_slice(),
-        )?;
+        install::sync_install(&parsed.global, refresh, upgrade, parsed.targets.as_slice())?;
         return Ok(());
     }
-    
+
     alpm_ops::preflight_transaction(&parsed.global)?;
     install_packages(parsed.targets.clone(), &parsed.global)?;
-    
+
     Ok(())
 }
 
 fn handle_query(parsed: &ParsedArgs) -> Result<()> {
     let flags = &parsed.query;
-    
+
     if flags.info {
         search::show_local_package_infos(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
     if flags.search {
         query_search_packages(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
     if flags.list_files {
         search::list_package_files(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
     if flags.manual {
         search::list_manual_packages(&parsed.global)?;
         return Ok(());
     }
-    
+
     if flags.owns {
         search::query_owns(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
     if flags.explicit {
         if parsed.targets.is_empty() {
             search::list_explicit_packages(&parsed.global)?;
@@ -569,39 +641,62 @@ fn handle_query(parsed: &ParsedArgs) -> Result<()> {
         }
         return Ok(());
     }
-    
+
     if flags.reverse_deps {
         search::query_reverse_dependencies(&parsed.global, &parsed.targets)?;
         return Ok(());
     }
-    
+
+    if flags.check_files {
+        search::check_package_files(&parsed.global, &parsed.targets)?;
+        return Ok(());
+    }
+
     if parsed.targets.is_empty() {
         query_list_packages(&parsed.global)?;
     } else {
         search::query_packages(&parsed.global, &parsed.targets)?;
     }
-    
+
+    Ok(())
+}
+
+fn handle_database(parsed: &ParsedArgs) -> Result<()> {
+    if !utils::is_root() {
+        eprintln!(
+            "{}",
+            "error: you cannot perform this operation unless you are root.".red()
+        );
+        std::process::exit(1);
+    }
+    install::set_install_reason(&parsed.targets, &parsed.global)?;
     Ok(())
 }
 
 fn handle_remove(parsed: &ParsedArgs) -> Result<()> {
     if !utils::is_root() {
-        eprintln!("{}", "error: you cannot perform this operation unless you are root.".red());
+        eprintln!(
+            "{}",
+            "error: you cannot perform this operation unless you are root.".red()
+        );
         std::process::exit(1);
     }
-    
+
     alpm_ops::ensure_db_unlocked(&parsed.global)?;
     remove_packages(parsed.targets.clone(), &parsed.remove, &parsed.global)?;
-    
+
     Ok(())
 }
 
 fn handle_upgrade(parsed: &ParsedArgs) -> Result<()> {
     if !utils::is_root() {
-        eprintln!("{}", "error: you cannot perform this operation unless you are root.".red());
+        eprintln!(
+            "{}",
+            "error: you cannot perform this operation unless you are root.".red()
+        );
         std::process::exit(1);
     }
-    
+
     alpm_ops::preflight_transaction(&parsed.global)?;
     install::install_local(&parsed.global, &parsed.targets)?;
     Ok(())
@@ -624,15 +719,36 @@ fn print_usage() {
     println!("{}", "rustpack".bold().cyan());
     println!("{}", "A Rust-based package manager for Arch Linux".dimmed());
     println!();
-    println!("{} {}", "Usage:".bold(), "rustpack <operation> [options] [targets]");
+    println!(
+        "{} {}",
+        "Usage:".bold(),
+        "rustpack <operation> [options] [targets]"
+    );
 
     print_help_section("Operations");
     print_help_row("-S [y|u|s|i]", "Sync/upgrade, search, or info", LEFT_WIDTH);
-    print_help_row("-Q [i|s|l|m|o|e|r]", "Query installed packages", LEFT_WIDTH);
+    print_help_row(
+        "-Q [i|s|l|m|o|e|r|k]",
+        "Query installed packages",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "-D (--asdeps|--asexplicit)",
+        "Set install reason for installed packages",
+        LEFT_WIDTH,
+    );
     print_help_row("-R [s|n]", "Remove packages", LEFT_WIDTH);
     print_help_row("-U <pkgfile>", "Install local package file", LEFT_WIDTH);
-    print_help_row("--why <pkg>", "Explain why a package is installed", LEFT_WIDTH);
-    print_help_row("doctor", "Run health checks (Arch/CachyOS aware)", LEFT_WIDTH);
+    print_help_row(
+        "--why <pkg>",
+        "Explain why a package is installed",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "doctor",
+        "Run health checks (Arch/CachyOS aware)",
+        LEFT_WIDTH,
+    );
     print_help_row("history", "Show transaction timeline", LEFT_WIDTH);
 
     print_help_section("Examples");
@@ -642,15 +758,53 @@ fn print_usage() {
     print_help_row("rustpack -Q", "List installed packages", LEFT_WIDTH);
     print_help_row("rustpack -Ql bash", "List files for bash", LEFT_WIDTH);
     print_help_row("rustpack -Qm", "List foreign packages", LEFT_WIDTH);
-    print_help_row("rustpack -Qe", "List explicitly installed packages", LEFT_WIDTH);
-    print_help_row("rustpack --why libva", "Explain install reason chain", LEFT_WIDTH);
-    print_help_row("rustpack -Qr glibc", "Show reverse dependencies of glibc", LEFT_WIDTH);
-    print_help_row("rustpack -Qo /usr/bin/vi", "Find owning package", LEFT_WIDTH);
-    print_help_row("rustpack doctor", "Run package-manager health checks", LEFT_WIDTH);
+    print_help_row(
+        "rustpack -Qe",
+        "List explicitly installed packages",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "rustpack -Qk bash",
+        "Check installed files for bash",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "sudo rustpack -D --asdeps bash",
+        "Mark bash as dependency-installed",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "rustpack --why libva",
+        "Explain install reason chain",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "rustpack -Qr glibc",
+        "Show reverse dependencies of glibc",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "rustpack -Qo /usr/bin/vi",
+        "Find owning package",
+        LEFT_WIDTH,
+    );
+    print_help_row(
+        "rustpack doctor",
+        "Run package-manager health checks",
+        LEFT_WIDTH,
+    );
     print_help_row("rustpack history", "Show recent transactions", LEFT_WIDTH);
-    print_help_row("rustpack history show <id>", "Show one transaction", LEFT_WIDTH);
+    print_help_row(
+        "rustpack history show <id>",
+        "Show one transaction",
+        LEFT_WIDTH,
+    );
     print_help_row("rustpack -R firefox", "Remove firefox", LEFT_WIDTH);
-    print_help_row("rustpack -Rns firefox", "Remove firefox and unused deps", LEFT_WIDTH);
+    print_help_row(
+        "rustpack -Rns firefox",
+        "Remove firefox and unused deps",
+        LEFT_WIDTH,
+    );
     print_help_row(
         "rustpack -U ./pkg.pkg.tar.zst",
         "Install a local package file",
@@ -662,7 +816,11 @@ fn print_usage() {
     print_help_note("Use '--' to stop option parsing (example: rustpack -S -- -weirdpkg)");
     print_help_note("Use '--test' to simulate changes without committing");
     print_help_note("Common options: --noconfirm --needed --overwrite --asdeps --asexplicit");
-    print_help_note("                --root --dbpath --cachedir --strict --compact --verbose --json");
+    print_help_note(
+        "                --root --dbpath --cachedir --strict --compact --verbose --json",
+    );
+    print_help_note("Download tuning: --parallel-downloads <n> --disable-download-timeout");
+    print_help_note("Doctor fix mode: rustpack doctor --fix");
     print_help_note("Emergency only: --insecure-skip-signatures (disables signature checks)");
     print_help_note("Dependency options: -d/-dd (--nodeps), --noscriptlet");
     print_help_note("Cache clean: -Sc (unused) or -Scc (all)");
@@ -703,7 +861,8 @@ fn emit_safety_warnings(global: &GlobalFlags) {
         eprintln!(
             "{} {}",
             "warning:".yellow().bold(),
-            "--overwrite can replace files owned by other packages; review targets carefully".yellow()
+            "--overwrite can replace files owned by other packages; review targets carefully"
+                .yellow()
         );
     }
     if global.insecure_skip_signatures {
@@ -730,17 +889,26 @@ fn print_runtime_error(global: &GlobalFlags, err: &anyhow::Error) {
         if msg == "__RUSTPACK_JSON_DOCTOR_FAILED__" {
             return;
         }
+        if msg == "__RUSTPACK_JSON_QK_FAILED__" {
+            return;
+        }
         println!("{{\"error\":\"{}\"}}", json_escape(&msg));
         return;
     }
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("db.lck") || lower.contains("unable to lock database") || lower.contains("database is locked") {
+    if lower.contains("db.lck")
+        || lower.contains("unable to lock database")
+        || lower.contains("database is locked")
+    {
         eprintln!(
             "{} {}",
             "error:".red().bold(),
             "package database is locked by another process.".red()
         );
-        eprintln!("{} wait for the other package manager process to finish.", "hint:".cyan().bold());
+        eprintln!(
+            "{} wait for the other package manager process to finish.",
+            "hint:".cyan().bold()
+        );
         eprintln!(
             "{} if no package manager is running, remove the stale lock file manually.",
             "hint:".cyan().bold()
@@ -771,7 +939,7 @@ fn print_runtime_error(global: &GlobalFlags, err: &anyhow::Error) {
 
 fn install_packages(packages: Vec<String>, global: &GlobalFlags) -> Result<()> {
     install::install_packages(&packages, global)?;
-    
+
     Ok(())
 }
 
@@ -795,8 +963,12 @@ fn query_search_packages(global: &GlobalFlags, queries: &[String]) -> Result<()>
     Ok(())
 }
 
-fn remove_packages(packages: Vec<String>, remove: &RemoveFlags, global: &GlobalFlags) -> Result<()> {
+fn remove_packages(
+    packages: Vec<String>,
+    remove: &RemoveFlags,
+    global: &GlobalFlags,
+) -> Result<()> {
     install::remove_packages(&packages, remove, global)?;
-    
+
     Ok(())
 }

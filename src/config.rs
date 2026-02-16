@@ -1,6 +1,6 @@
-use anyhow::{Result, Context};
-use std::fs;
+use anyhow::{Context, Result};
 use regex::Regex;
+use std::fs;
 
 #[derive(Debug, Clone)]
 pub struct PacmanConfig {
@@ -16,6 +16,8 @@ pub struct PacmanConfig {
     pub sig_level: Option<String>,
     pub local_file_sig_level: Option<String>,
     pub remote_file_sig_level: Option<String>,
+    pub parallel_downloads: Option<u32>,
+    pub disable_download_timeout: bool,
     pub repositories: Vec<Repository>,
 }
 
@@ -41,41 +43,42 @@ impl Default for PacmanConfig {
             sig_level: None,
             local_file_sig_level: None,
             remote_file_sig_level: None,
+            parallel_downloads: None,
+            disable_download_timeout: false,
             repositories: Vec::new(),
         }
     }
 }
 
 pub fn parse_pacman_config(path: &str) -> Result<PacmanConfig> {
-    let content = fs::read_to_string(path)
-        .context(format!("Failed to read {}", path))?;
-    
+    let content = fs::read_to_string(path).context(format!("Failed to read {}", path))?;
+
     let mut config = PacmanConfig::default();
     let mut current_repo: Option<Repository> = None;
     let mut in_options = false;
-    
+
     let repo_regex = Regex::new(r"^\[([^\]]+)\]").unwrap();
     let option_regex = Regex::new(r"^(\w+)\s*=\s*(.+)").unwrap();
-    
+
     for line in content.lines() {
         let line = line.trim();
-        
+
         // Skip comments and empty lines
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        
+
         // Check for repository section
         if let Some(caps) = repo_regex.captures(line) {
             let section_name = caps.get(1).unwrap().as_str();
-            
+
             // Save previous repository
             if let Some(repo) = current_repo.take() {
                 if !repo.servers.is_empty() {
                     config.repositories.push(repo);
                 }
             }
-            
+
             // Track [options] section
             in_options = section_name == "options";
             if section_name != "options" {
@@ -87,7 +90,7 @@ pub fn parse_pacman_config(path: &str) -> Result<PacmanConfig> {
             }
             continue;
         }
-        
+
         if in_options {
             // Boolean-style options
             match line {
@@ -99,15 +102,19 @@ pub fn parse_pacman_config(path: &str) -> Result<PacmanConfig> {
                     config.use_syslog = true;
                     continue;
                 }
+                "DisableDownloadTimeout" => {
+                    config.disable_download_timeout = true;
+                    continue;
+                }
                 _ => {}
             }
         }
-        
+
         // Parse options
         if let Some(caps) = option_regex.captures(line) {
             let key = caps.get(1).unwrap().as_str();
             let value = caps.get(2).unwrap().as_str();
-            
+
             match key {
                 "RootDir" => config.root_dir = value.to_string(),
                 "DBPath" => config.db_path = value.to_string(),
@@ -122,6 +129,9 @@ pub fn parse_pacman_config(path: &str) -> Result<PacmanConfig> {
                 }
                 "RemoteFileSigLevel" if in_options => {
                     config.remote_file_sig_level = Some(value.to_string())
+                }
+                "ParallelDownloads" if in_options => {
+                    config.parallel_downloads = value.parse::<u32>().ok();
                 }
                 "Server" => {
                     if let Some(ref mut repo) = current_repo {
@@ -145,34 +155,40 @@ pub fn parse_pacman_config(path: &str) -> Result<PacmanConfig> {
             }
         }
     }
-    
+
     // Save last repository
     if let Some(repo) = current_repo {
         if !repo.servers.is_empty() {
             config.repositories.push(repo);
         }
     }
-    
+
     Ok(config)
 }
 
 fn parse_mirrorlist(path: &str) -> Result<Vec<String>> {
     let content = fs::read_to_string(path)?;
     let mut servers = Vec::new();
-    
+
     let server_regex = Regex::new(r"^\s*Server\s*=\s*(.+)").unwrap();
-    
+
     for line in content.lines() {
         if let Some(caps) = server_regex.captures(line) {
             let server = caps.get(1).unwrap().as_str().to_string();
             servers.push(server);
         }
     }
-    
+
     Ok(servers)
 }
 
-pub fn expand_server_url(server: &str, repo_name: &str, arch: &str, arch_v3: &str, arch_v4: &str) -> String {
+pub fn expand_server_url(
+    server: &str,
+    repo_name: &str,
+    arch: &str,
+    arch_v3: &str,
+    arch_v4: &str,
+) -> String {
     server
         .replace("$repo", repo_name)
         .replace("$arch_v3", arch_v3)
@@ -183,7 +199,7 @@ pub fn expand_server_url(server: &str, repo_name: &str, arch: &str, arch_v3: &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_expand_server_url() {
         let url = "https://mirror.example.com/$repo/os/$arch";
